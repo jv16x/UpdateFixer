@@ -1,7 +1,7 @@
 # UpdateFixer
 Update Fixer is a lightweight app to fix Windows Update not working.
 
-Update Fixer version 1.0
+Update Fixer version 1.1
 By Jouni Flemming (Macecraft Software)
 
 Official website: https://winupdatefixer.com/
@@ -63,7 +63,15 @@ Windows Update Troubleshooter couldn't), not to make it work and work in the mos
 Anyone reviewing this code is free to let me know of fixes and improvements how all this
 can be done without the use of Batch/PowerShell script files.
 
-This version 1.0 was released only for the purposes of asking for feedback, it should not be 
-considered a final product.
+** Change Log **
+
+  Changes since version 1.0
+
+  1) Removed the use of encrypted strings in order to improve code readability. They were used to
+     prevent VirusTotal false positives. I'm going to ass-u-me that since the program is now open source,
+     it will no longer be flagged with such false positive detections.
+  2) Replaced all of the hard-coded 'c:\windows\' references with %WINDIR%. While this makes very little difference
+     for any actual use case, it's still a better way to do it.
+  3) Other minor code cleanup and maintenance, and added some more comments to document the code.
 
 
