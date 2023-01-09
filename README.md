@@ -63,4 +63,7 @@ Windows Update Troubleshooter couldn't), not to make it work and work in the mos
 Anyone reviewing this code is free to let me know of fixes and improvements how all this
 can be done without the use of Batch/PowerShell script files.
 
+This version 1.0 was released only for the purposes of asking for feedback, it should not be 
+considered a final product.
+
 
