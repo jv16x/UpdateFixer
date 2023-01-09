@@ -1,8 +1,7 @@
 ﻿unit MainFormUnit;
 
-
 {
-  Update Fixer version 1.0
+  Update Fixer version 1.1
   By Jouni Flemming (Macecraft Software)
 
   Official website: https://winupdatefixer.com/
@@ -65,6 +64,17 @@
   can be done without the use of Batch/PowerShell script files.
 
 
+  ** Change Log **
+
+  Changes since version 1.0
+
+  1) Removed the use of encrypted strings in order to improve code readability. They were used to
+     prevent VirusTotal false positives. I'm going to ass-u-me that since the program is now open source,
+     it will no longer be flagged with such false positive detections.
+  2) Replaced all of the hard-coded 'c:\windows\' references with %WINDIR%. While this makes very little difference
+     for any actual use case, it's still a better way to do it.
+  3) Other minor code cleanup and maintenance, and added some more comments to document the code.
+
 }
 
 
@@ -101,6 +111,7 @@ uses
   System.Character,
   AclAPI,
   AccCtrl,
+  StrUtils,
   System.IOUtils, TLHelp32,
   Win64bitDetector,
   System.Win.TaskbarCore, System.Win.Taskbar,
@@ -110,7 +121,7 @@ uses
   Vcl.AppEvnts, Vcl.Imaging.GIFImg, Vcl.Menus;
 
 const
- APP_VERSION       = '1.0';
+ APP_VERSION       = '1.1';
  DEBUG_STORE_BAT   = 0; // If 1, saves all the generated script files to user's desktop.
  DEBUG_PIRATED     = 0; // If 1, the pirated Windows detection will always detect OS as pirated in order to test how the UI looks like
  DEBUG_NO_ISSUES   = 0; // If 1, the analysis shall not find any problems in order to test how the UI looks like
@@ -120,61 +131,19 @@ const
  DEBUG_WRITE_LOG   = 0; // If 1, the app will generate a debug log to user's desktop
 
 
- // We are using a simple xor encryption + base64 encoding
- // in order to not include certain strings in the source code,
- // as having these in plaintext in the program binary caused
- // many false positive malware warnings in VirusTotal and
- // the anti-virus companies took days to process the false positive reports
- // and we were under a deadline to release the app
- // I'll remove this encrypted string nonsense when the false positive issues are solved
- // The decryption happens in function _x()
-
- GLOB_Crypt_CmdExe    = '!aWZoI2t3dQ=='; // 'cmd.exe'
- GLOB_Crypt_Powerhell = '!emR7aHx8eHR+fzpwbnI='; // 'powershell.exe'
- GLOB_Crypt_RegIni    = '!SnlpamdheT93a3E1O3U4'; // '@regini.exe -b '
- GLOB_Crypt_RegExeDel = '!SnlpaiBqaHQyV1FZU0Nd'; // '@reg.exe DELETE'
- GLOB_Crypt_Del       = '!Sm9pYS4gQTE9VTQ6RTc='; // '@del /Q /F /S '
- GLOB_Crypt_TakeOwn   = '!Sn9tZmtgZ38yPFU1OUU4'; // '@takeown /A /R '
- GLOB_Crypt_Attrib    = '!Smp4eXxmcjE/QTQ4RTc1UTo='; // '@attrib -R -S -H '
- GLOB_Crypt_Timeout   = '!fmJhaGF6ZDE9ZzQnNjh2dnhpeXx1Px4BbHZo'; // 'timeout /t 2 /nobreak > NUL'
- GLOB_Crypt_ps1       = '!JHt/PA=='; // '.ps1'
- GLOB_Crypt_Runas     = '!eH5ibH0='; // 'runas'
-
 
  Win10DeliveryDirs : Array[0 .. 7] of String =
-    ('C:\Windows\Temp\',
-     'C:\Windows\CbsTemp\',
-     'C:\Windows\SoftwareDistribution\',
-     'C:\Windows\Logs\',
-     'C:\Windows\Logs\WindowsUpdate\',
-     'C:\Windows\System32\CatRoot2\',
-     '<x>\Application Data\Microsoft\Network\', // <x> => FAllUserProfile, no trail!
-     '<x>\Microsoft\Network\Downloader\'
+    ('%WINDIR%\Temp\',
+     '%WINDIR%\CbsTemp\',
+     '%WINDIR%\SoftwareDistribution\',
+     '%WINDIR%\Logs\',
+     '%WINDIR%\Logs\WindowsUpdate\',
+     '%WINDIR%\System32\CatRoot2\',
+     '%ALLUSERSPROFILE%\Application Data\Microsoft\Network\', // <x> => FAllUserProfile, no trail!
+     '%ALLUSERSPROFILE%\Microsoft\Network\Downloader\'
      );
 
- // also encrypted:
- ServiceNamesArr_X : Array[0 .. 5] of String =
-    ('!XX5teF1qYmc=',
-     '!SEJYXg==',
-     '!SXl1fXpcZnI=',
-     '!R3hlXmt9ZnRg',
-     '!TmhjYEJuZX9xew==',
-     '!Xnl5fnpqdFh8YGB0ent9aw==');
 
- ServiceDescsArrX : Array[0 .. 5] of String =
-    ('!XWJiaWF4YzFHY3B0YnI=',
-     '!SGpvZml9f2R8dzRceGN9dXZye3hwawB1UEJKVkBCWgl5Tl5bR0xV',
-     '!SXl1fXpgd2NzY3x8dTdLfGhtdX57bA==',
-     '!XWJiaWF4YzFbfWdhd3t0fGg=',
-     '!XWJiaWF4YzFffHBgenJrOVN1b2l/c0xEUA==',
-     '!X3tobHpqMF5gcHxwZWNqeG50bj1NelJXS0BB');
-
- ServiceKeySubDirsX : Array[0 .. 2] of String =
-    ('!Wmp+bGNqZHRgYA==', '!WW5veHxmZGg=', '!XnllamlqYlh8dXs=');
-
-
-{
- // In plaintext:
  ServiceNamesArr : Array[0 .. 5] of String =
     ('WuauServ',
      'BITS',
@@ -193,7 +162,6 @@ const
 
  ServiceKeySubDirs : Array[0 .. 2] of String =
     ('Parameters', 'Security', 'TriggerInfo');
-}
 
 type
   TMainForm = class(TForm)
@@ -336,7 +304,6 @@ type
     FDebugDir          : String; // With a trailing slash
     FTempDir           : String; // With a trailing slash
     FDesktopDir        : String; // With a trailing slash
-    FAllUserProfile    : String; // NOTE: No trailing slash!
     FWinVer            : String; // Version of Windows, e.g. 'Windows 10'
     FUI_DarkMode       : Boolean; // UI in Dark Mode or not
     FUI_AutoPos        : Boolean; // Whether app window should be automatically centered
@@ -355,7 +322,6 @@ type
     FTransStringsCache : TDictionary<String,String>;
     FTransHashesCache  : TDictionary<String,String>;
     FEnvVars           : TDictionary<String,String>;
-    FXStrings          : TDictionary<String,String>;
     FExistsCache       : TDictionary<String, Boolean>;
     FTaskbarHelper     : TWinTaskbar;
     FBatFile           : TStringList;
@@ -399,7 +365,7 @@ type
     Function UI_AnyCheckboxChecked() : Boolean;
 
     Function DirectoryExists_Cached(Const InputStr : String; const DualModeCheck : Boolean = True) : Boolean;
-    Function FileExists_Cached(Const InputStr : String) : Boolean;
+    Function FileExists_Cached(Const InputStr : String; const DualModeCheck : Boolean = True) : Boolean;
 
     procedure Init_Translation();
     procedure Init_Translation_LoadSection(const DataList : TStringList; const SectionName : String);
@@ -407,7 +373,6 @@ type
 
     Function _t(Const Str : String; Const StrID : String; Const InsertDataArr : Array of String) : String; Overload;
     Function _t(const Str : String; const StrID : String; const InsertData : String = '') : String;        Overload;
-    Function _x(const Str : String) : String;
 
     Procedure RunBatchFileAndWait(Const FileName: string);
     function RunBatchFileAndWait_GetCount() : Integer;
@@ -416,6 +381,8 @@ type
     Procedure RunPSFileAndWait(Const FileName: string);
 
     Function ExpandEnvVariable(const EnvVar : String) : String;
+    Function ExpandPath(const Path : String) : String;
+
     Function MyExitWindows(const RebootParam: Longword): Boolean;
     Function HasAttrib(const Filename : String; Attr : Integer) : Boolean;
 
@@ -430,7 +397,7 @@ type
     function SID_GetUserSID() : Pointer;
     function MyGetUserName(): String;
     function MyGetComputerName(): String;
-
+    Function GetAllUserDirs() : TStringList;
   public
     Function IsByDefaultReadOnlyServKey(const ServName : String) : Boolean;
     Function Analyze_System_Service_CanRead(const ServName : String) : Boolean;
@@ -442,7 +409,6 @@ type
     Procedure Analyze_System_Blockers();
     Procedure Analyze_DeliveryDirs();
     Procedure Analyze_HostsFile();
-    Procedure Analyze_HostsFile_DO();
     Procedure Analyze_WinVer();
 
     Procedure Analyze_Start_Cmd();
@@ -461,10 +427,8 @@ type
     Procedure Process_Services();
     Procedure Process_Delivery_Files();
     Procedure Process_HostsFile();
-    Procedure Process_HostsFile_DO();
 
     Procedure Process_Temporary_Files();
-    Function GetAllUserDirs() : TStringList;
   end;
 
 var
@@ -504,15 +468,13 @@ end;
 
 Procedure TMainForm.Analyze_Start_Cmd();
 Const
- //Cmd = 'cscript /Nologo "C:\Windows\System32\slmgr.vbs" /dli';
- CmdX = '!aXhvf2d/ZDE9XXt5eXB3OThYJkFJdk5FTVRXeXVeW11PRh8fclxcXFVBGkNURBoZFV9QVA==';
-
+ Cmd = 'cscript /Nologo "%WINDIR%\System32\slmgr.vbs" /dli';
 begin
 
  if DEBUG_NO_BATCH = 1 then EXIT;
 
  FCmdResultFile := GetTempDir() + 'update_fixer_can_be_deleted_' + IntToStr(GetTickCount) +'.tmp';
- ShellExecuteDo(_x(GLOB_Crypt_CmdExe), '/C ' + _x(CmdX) + ' > "' + FCmdResultFile + '"');
+ ShellExecuteDo('cmd.exe', '/C ' + ExpandPath(Cmd) + ' > "' + FCmdResultFile + '"');
 
 end;
 
@@ -534,7 +496,7 @@ begin
     exInfo.lpVerb := 'open';
     exInfo.lpParameters := PChar(Params);
     lpFile := PChar(FileName);
-    nShow := SW_HIDE; //SW_SHOWNORMAL;
+    nShow := SW_HIDE;
   end;
 
   if ShellExecuteEx(@exInfo) then Result := true;
@@ -590,7 +552,7 @@ begin
  // editing that copy not to translate (localize) its output and run that instead
  // of running the original vbs file.
  // Todo: To detect whether user is using a genuine Windows with a more elegant way
- Filename := _x('!aTFQemdhdH5lYEhmb2RsfHcoLkFtc01GUA1SR1U='); //'c:\windows\system32\slmgr.vbs';
+ Filename := ExpandPath('%WINDIR%\System32\slmgr.vbs');
  If FileExists_Cached(Filename) = False then
  begin
   FPiratedWindows := True;
@@ -633,7 +595,7 @@ begin
  If FileExists_Cached(Filename) = False then EXIT;
 
  x := RunBatchFileAndWait_GetCount();
- ShellExecuteDo(_x(GLOB_Crypt_CmdExe), '/C cscript /Nologo "' + Filename + '" /DLI > "' + TmpFile + '"');
+ ShellExecuteDo('cmd.exe', '/C cscript /Nologo "' + Filename + '" /DLI > "' + TmpFile + '"');
 
  for i := 1 to 8 do
  begin
@@ -653,67 +615,6 @@ begin
 end;
 
 
-Function TMainForm._x(const Str : String) : String;
-Var
- i      : Integer;
- Base64 : TBase64Encoding;
- TmpStr : String;
-begin
-
-
- Result := '';
- if Str = '' then
- begin
-  {$IFDEF Debug_ExceptionMessages}
-  ShowMessage('_x empty input!');
-  {$ENDIF}
-
-  {$IFDEF Debug_GenerateDebugLog}
-  DebugLog('_x empty input!');
-  {$ENDIF}
-
-  EXIT;
- End;
-
- if FXStrings.TryGetValue(Str, Result) then EXIT;
- Base64 := TBase64Encoding.Create();
-
- // Decrypt:
- if Str[1] = '!' then
- begin
-  TmpStr := Base64.Decode( Copy(Str, 2, Length(Str) ));
-
-  {$IFDEF Debug_ExceptionMessages}
-  If Length(TmpStr) < 3 then ShowMessage('_x invalid TmpStr: ' + TmpStr);
-  {$ENDIF}
-
-  for i := 1 to Length(TmpStr) do Result := Result + Chr(Ord(TmpStr[i]) xor ((i+9) mod 69));
- end else
-
- // Encrypt:
- begin
-  TmpStr := '';
-  for i := 1 to Length(Str) do TmpStr := TmpStr + Chr(Ord(Str[i]) xor ((i+9) mod 69));
-  Result := '!' + Base64.Encode(TmpStr);
- end;
-
-
- {$IFDEF Debug_ExceptionMessages}
- If Length(Result) < 3 then ShowMessage('_x invalid output: ' + Result);
- {$ENDIF}
-
-
- Base64.Free;
- FXStrings.AddOrSetValue(Str, Result);
-
- {$IFDEF Debug_GenerateDebugLog}
- //DebugLog('_x: ' + Str + ' => ' + Result);
- {$ENDIF}
-
-
-
-End;
-
 procedure TMainForm.btnAnalyzeClick(Sender: TObject);
 Var
  i : Integer;
@@ -728,7 +629,7 @@ begin
  GetDesktopDir();
 
  {$IFDEF Debug_ExceptionMessages}
- if (High(ServiceNamesArr_X) <> High(ServiceDescsArrX)) or
+ if (High(ServiceNamesArr) <> High(ServiceDescsArrX)) or
     (FServiceCheckboxes.Count-1 <> High(ServiceDescsArrX)) or
     (FServiceCheckboxes.Count <> FServiceLabels.Count) or
     (FServiceCheckboxes.Count <> FServicePanels.Count) then ShowMessage('Internal Error: x1');
@@ -949,7 +850,7 @@ begin
 
  for i := Low(FServiceOKArr) to High(FServiceOKArr) do
  begin
-   FServiceCheckboxes[i].Caption := _t('Re-enable service: {1}', 'updatefixer.services-re-enable', _x(ServiceDescsArrX[i]));
+   FServiceCheckboxes[i].Caption := _t('Re-enable service: {1}', 'updatefixer.services-re-enable', ServiceDescsArr[i]);
 
    if FServiceOKArr[i] then
    begin
@@ -957,7 +858,7 @@ begin
     FServiceCheckboxes[i].Parent  := vlistOptionalSub;
     FServiceLabels[i].Parent      := vlistOptionalSub;
     FServicePanels[i].Parent      := vlistOptionalSub;
-    FServiceLabels[i].Caption     := _t('Resets the settings of Windows Update related system service called "{1}". No problems or unusual settings were detected but if Windows Update is not working, you should probably run this option.', 'updatefixer.services-ok', _x(ServiceDescsArrX[i]));
+    FServiceLabels[i].Caption     := _t('Resets the settings of Windows Update related system service called "{1}". No problems or unusual settings were detected but if Windows Update is not working, you should probably run this option.', 'updatefixer.services-ok', ServiceDescsArr[i]);
    end else
    begin
     AllServicesOK                 := False;
@@ -965,7 +866,7 @@ begin
     FServiceCheckboxes[i].Parent  := vlistRecommendedSub;
     FServiceLabels[i].Parent      := vlistRecommendedSub;
     FServicePanels[i].Parent      := vlistRecommendedSub;
-    FServiceLabels[i].Caption     := _t('Resets the settings of Windows Update related system service called "{1}". Unusual system service settings were detected which might cause Windows Update to not work. Using this option is recommended.', 'updatefixer.services-not-ok', _x(ServiceDescsArrX[i]));
+    FServiceLabels[i].Caption     := _t('Resets the settings of Windows Update related system service called "{1}". Unusual system service settings were detected which might cause Windows Update to not work. Using this option is recommended.', 'updatefixer.services-not-ok', ServiceDescsArr[i]);
    end;
  end;
 
@@ -1114,8 +1015,6 @@ begin
 end;
 
 procedure TMainForm.btnFixClick(Sender: TObject);
-Var
- i : Integer;
 begin
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := 'Starting... '; Application.ProcessMessages; {$ENDIF}
@@ -1460,7 +1359,9 @@ Procedure TMainForm.DebugLog(const Str : String);
 begin
 
  FDebugLog.Add('[' + IntToStr(GetTickCount) + ']: ' + Str);
- if FastPosExB('Exception', Str) or
+
+ if Str.StartsWith('*') or
+    FastPosExB('Exception', Str) or
     FastPosExB('Start:', Str) or
     FastPosExB('Click:', Str) then FDebugLog.Add('');
 
@@ -1514,7 +1415,6 @@ begin
  FTransStringsCache := TDictionary<String,String>.Create;
  FTransHashesCache  := TDictionary<String,String>.Create;
  FEnvVars           := TDictionary<String,String>.Create;
- FXStrings          := TDictionary<String,String>.Create;
  FExistsCache       := TDictionary<String, Boolean>.Create;
  FTaskbarHelper     := TWinTaskbar.Create;
  FBatFile           := TStringList.Create;
@@ -2118,7 +2018,6 @@ begin
 
    FDebugDir := ExpandEnvVariable('%USERPROFILE%') + '\Desktop\';
 
-   FAllUserProfile := ExpandEnvVariable('%ALLUSERSPROFILE%');
  except
   {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('Init_AppDirs Exception: ' + E.Message); {$ENDIF}
  end;
@@ -2630,13 +2529,13 @@ begin
   SetPrivilege('SeTakeOwnershipPrivilege', true);
   //SetPrivilege(_x('!WW5YbGVqX2Z8dmZmfn5oSWhyanRyekdE'), true);
 
-  UsrID := _x('!WSY9IDsiIyM/JiAg');     // 'S-1-5-32-545' - also: S-1-5-32-545='users';  S-1-1-0='everyone'
+  UsrID := 'S-1-5-32-545'; // Note: S-1-5-32-545='users';  S-1-1-0='everyone'
 
-  for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+  for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
   begin
     if FServiceCheckboxes[i].Checked = False then Continue;
 
-    ServName := _x(ServiceNamesArr_X[i]);
+    ServName := ServiceNamesArr[i];
     if Analyze_System_Service_IsOK(ServName) = False then
     begin
      If IsByDefaultReadOnlyServKey(ServName) then Continue;
@@ -2647,14 +2546,12 @@ begin
     ConvertStringSidToSid(PChar(UsrID), SID);
     if SID = nil then Break;
 
-    // 'MACHINE\SYSTEM\CurrentControlSet\Services\'
-    sObject := _x('!R0pPRUdBVU1BSkdBU1pEWm9pbnhwa2NOTFdWSkp0TV12eElfWEZTVEFv') + ServName;
+    sObject := 'MACHINE\SYSTEM\CurrentControlSet\Services\' + ServName;
 
     {$IFDEF Debug_GenerateDebugLog}
       DebugLog('Process_Init_Pas: ' + sObject);
     {$ENDIF}
 
-    //ShowMessage('debug: ' + sObject);
     cchName := 0;
     cchDomain := 0;
 
@@ -2706,7 +2603,7 @@ begin
                   if (dwResult <> ERROR_SUCCESS) and (dwResult <> ERROR_INVALID_PARAMETER) then
                      ShowMessage('SetNamedSecurityInfo Take Ownership failed: ' + SysErrorMessage(GetLastError));
                              }
-                  //FreeMem(Sd);
+                  FreeMem(Sd);
                 end;
 
 
@@ -2727,7 +2624,7 @@ begin
          // else
          //   ShowMessage('SetEntriesInAcl failed: ' + SysErrorMessage(dwResult));
 
-          //FreeMem(pEA);
+          FreeMem(pEA);
         end;
       end;
     except
@@ -2745,17 +2642,10 @@ end;
 
 Procedure TMainForm.Process_Init();
 const
- //CMD0 = '@DISM /Online /Cleanup-Image /CheckHealth  > NUL 2>&1';
- CMD0x = '!Sk9FXkMvP158f317czc3WnZ+fXNrbw1oT0JDQAYIa0FPSEdlS05cRVoTFAsWeW11GgkCGw8=';
-
- //CMD_Base = '@net stop <x>  > NUL 2>&1';
- CMD_Base = '!SmVpeS58ZH5iMyhtKDc4JzpVSVE+LR4HEw==';
-
- //PS_Base = 'Stop-Service -Name <x> -ErrorAction SilentlyContinue ';
- PS_BaseX = '!WX9jfSNcdWNkendwNjpWeHd+PCFmIQAMZ1FWSlRmS11DREINfUZcVFxHWEx1WFZNU1VJWB4=';
-
- //CMD1 = '@taskkill /im wuauclt.exe /f > NUL 2>&1';
- CMD1x = '!Sn9tfmVkeX1+Mzt8ezdvbHtuf3FqMUVZRwMLQwYZCGd/ZwwfEAkB';
+ CMD0     = '@DISM /Online /Cleanup-Image /CheckHealth  > NUL 2>&1';
+ CMD_Base = '@net stop <x>  > NUL 2>&1';
+ PS_Base  = 'Stop-Service -Name <x> -ErrorAction SilentlyContinue ';
+ CMD1     = '@taskkill /im wuauclt.exe /f > NUL 2>&1';
 
 Var
  i        : Integer;
@@ -2782,23 +2672,23 @@ Begin
  FBatFile.Add(':: Detected Windows version is: ' + FWinVer);
  FBatFile.Add('');
 
- FBatFile.Add(_x(CMD0x));
+ FBatFile.Add( CMD0 );
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
-   FBatFile.Add( StringReplace(_x(CMD_Base), '<x>', _x(ServiceNamesArr_X[i]), [rfReplaceAll, rfIgnoreCase]) );
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
+   FBatFile.Add( StringReplace(CMD_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
- FBatFile.Add( _x(CMD1x));
- Filename := GetTempDir() + 'update_fixer_can_delete_' + IntToStr(GetTickCount) + _x(GLOB_Crypt_ps1);
- FBatFile.Add(_x(GLOB_Crypt_Del) + '"'+Filename+'" > NUL 2>&1');
+ FBatFile.Add( CMD1 );
+ Filename := GetTempDir() + 'update_fixer_can_delete_' + IntToStr(GetTickCount) + '.ps1';
+ FBatFile.Add('@del /Q /F /S "' +Filename+ '" > NUL 2>&1');
 
 
  PS_File := TStringList.Create;
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
-   PS_File.Add( StringReplace(_x(PS_BaseX), '<x>', _x(ServiceNamesArr_X[i]), [rfReplaceAll, rfIgnoreCase]) );
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
+   PS_File.Add( StringReplace(PS_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
  PS_File.SaveToFile(Filename);
- if DEBUG_STORE_BAT = 1 then PS_File.SaveToFile( GetDesktopDir() + 'init' + _x(GLOB_Crypt_ps1) );
+ if DEBUG_STORE_BAT = 1 then PS_File.SaveToFile( GetDesktopDir() + 'init.ps1' );
  PS_File.Free;
 
 
@@ -2843,6 +2733,108 @@ const
   'VybWlzc2lvbnMpDQokcmVnQUNMID0gJHJlZ0tleS5HZXRBY2Nlc3NDb250cm9sKCkNCiRyZWdSdWxlID0gTmV3LU9iamVjdCBTeXN0ZW0uU2VjdXJpdHkuQWNjZXNzQ29udHJvbC5SZWdpc3RyeUFjY2Vzc1J1bGUgKCRhZG1pbiwiRnVsbENvbnRyb2wiLCJDb250YWluZXJJbmhlcml0IiwiTm9uZSIsIkFsbG93IikNCiRyZWdBQ0wuU2V0'+
   'QWNjZXNzUnVsZSgkcmVnUnVsZSkNCiRyZWdLZXkuU2V0QWNjZXNzQ29udHJvbCgkcmVnQUNMKQ0KDQpTZXQtU2VydmljZSAtTmFtZSAkc2VydmljZU5hbWUgLVN0YXR1cyBydW5uaW5nIC1TdGFydHVwVHlwZSBhdXRvbWF0aWM=';
 
+  // The above is base64 encoded version of this PowerShell script template, that is
+  // used to take ownership and reset the permissions of a given \Services registry key
+  // in order to fix it.
+  // The code:
+
+  (*
+
+  function Enable-Privilege {
+   param(
+    [ValidateSet(
+     "SeAssignPrimaryTokenPrivilege", "SeAuditPrivilege", "SeBackupPrivilege",
+     "SeChangeNotifyPrivilege", "SeCreateGlobalPrivilege", "SeCreatePagefilePrivilege",
+     "SeCreatePermanentPrivilege", "SeCreateSymbolicLinkPrivilege", "SeCreateTokenPrivilege",
+     "SeDebugPrivilege", "SeEnableDelegationPrivilege", "SeImpersonatePrivilege", "SeIncreaseBasePriorityPrivilege",
+     "SeIncreaseQuotaPrivilege", "SeIncreaseWorkingSetPrivilege", "SeLoadDriverPrivilege",
+     "SeLockMemoryPrivilege", "SeMachineAccountPrivilege", "SeManageVolumePrivilege",
+     "SeProfileSingleProcessPrivilege", "SeRelabelPrivilege", "SeRemoteShutdownPrivilege",
+     "SeRestorePrivilege", "SeSecurityPrivilege", "SeShutdownPrivilege", "SeSyncAgentPrivilege",
+     "SeSystemEnvironmentPrivilege", "SeSystemProfilePrivilege", "SeSystemtimePrivilege",
+     "SeTakeOwnershipPrivilege", "SeTcbPrivilege", "SeTimeZonePrivilege", "SeTrustedCredManAccessPrivilege",
+     "SeUndockPrivilege", "SeUnsolicitedInputPrivilege")]
+    $Privilege,
+    $ProcessId = $pid,
+    [Switch] $Disable
+   )
+
+   $definition = @'
+   using System;
+   using System.Runtime.InteropServices;
+
+   public class AdjPriv
+   {
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    internal static extern bool AdjustTokenPrivileges(IntPtr htok, bool disall,
+     ref TokPriv1Luid newst, int len, IntPtr prev, IntPtr relen);
+
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    internal static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    internal static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal struct TokPriv1Luid
+    {
+     public int Count;
+     public long Luid;
+     public int Attr;
+    }
+
+    internal const int SE_PRIVILEGE_ENABLED = 0x00000002;
+    internal const int SE_PRIVILEGE_DISABLED = 0x00000000;
+    internal const int TOKEN_QUERY = 0x00000008;
+    internal const int TOKEN_ADJUST_PRIVILEGES = 0x00000020;
+    public static bool EnablePrivilege(long processHandle, string privilege, bool disable)
+    {
+     bool retVal;
+     TokPriv1Luid tp;
+     IntPtr hproc = new IntPtr(processHandle);
+     IntPtr htok = IntPtr.Zero;
+     retVal = OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
+     tp.Count = 1;
+     tp.Luid = 0;
+     if(disable)
+     {
+      tp.Attr = SE_PRIVILEGE_DISABLED;
+     }
+     else
+     {
+      tp.Attr = SE_PRIVILEGE_ENABLED;
+     }
+     retVal = LookupPrivilegeValue(null, privilege, ref tp.Luid);
+     retVal = AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+     return retVal;
+    }
+   }
+  '@
+
+   $processHandle = (Get-Process -id $ProcessId).Handle
+   $type = Add-Type $definition -PassThru
+   $type[0]::EnablePrivilege($processHandle, $Privilege, $Disable)
+  }
+
+  Enable-Privilege SeTakeOwnershipPrivilege
+
+  $regKeyPath = "SYSTEM\CurrentControlSet\Services\<x>"
+  $serviceName = "<x>"
+  $admin = "Administrators"
+
+  $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($regKeyPath,[Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::TakeOwnership)
+  $regACL = $regKey.GetAccessControl()
+  $regACL.SetOwner([System.Security.Principal.NTAccount]$admin)
+  $regKey.SetAccessControl($regACL)
+
+  $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($regKeyPath,[Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::ChangePermissions)
+  $regACL = $regKey.GetAccessControl()
+  $regRule = New-Object System.Security.AccessControl.RegistryAccessRule ($admin,"FullControl","ContainerInherit","None","Allow")
+  $regACL.SetAccessRule($regRule)
+  $regKey.SetAccessControl($regACL)
+
+  Set-Service -Name $serviceName -Status running -StartupType automatic
+
+  *)
+
 Var
  i        : Integer;
  j        : Integer;
@@ -2864,11 +2856,11 @@ begin
  End;
 
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
  begin
    if FServiceCheckboxes[i].Checked = False then Continue;
 
-   ServName := _x(ServiceNamesArr_X[i]);
+   ServName := ServiceNamesArr[i];
    if Analyze_System_Service_IsOK(ServName) = False then
    begin
     If IsByDefaultReadOnlyServKey(ServName) then Continue;
@@ -2881,14 +2873,14 @@ begin
    TmpList.Clear;
    TmpList.Add( StringReplace(Content, '<x>', ServName, [rfReplaceAll, rfIgnoreCase]) );
 
-   for j := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
-    TmpList.Add( StringReplace(Content, '<x>', ServName +'\'+ _x(ServiceKeySubDirsX[j]), [rfReplaceAll, rfIgnoreCase]) );
+   for j := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
+    TmpList.Add( StringReplace(Content, '<x>', ServName +'\'+ ServiceKeySubDirs[j], [rfReplaceAll, rfIgnoreCase]) );
 
    Try
-     Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_' + IntToStr(i) + '_' + IntToStr(GetTickCount) + _x(GLOB_Crypt_ps1);
+     Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_' + IntToStr(i) + '_' + IntToStr(GetTickCount) + '.ps1';
      TmpList.SaveToFile(Filename);
 
-     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'finalize' + IntToStr(i) + _x(GLOB_Crypt_ps1));
+     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'finalize' + IntToStr(i) + '.ps1');
 
      RunPSFileAndWait(Filename);
    Except
@@ -2910,17 +2902,10 @@ end;
 
 Procedure TMainForm.Process_Finalize();
 const
- //CMD_Base = '@net start <x> > NUL 2>&1';
- CMD_BaseX = '!SmVpeS58ZHBgZzQpbik4JzpVSVE+LR4HEw==';
-
- //CMD2 = '@wuauclt /ResetAuthorization /DetectNow > NUL 2>&1';
- CMD2x = '!Snx5bHtsfGUyPEZwZXJsWG9vdHJsdlpAVkpLSwYIbExeTk9ZYEBHEQwTemB6FwoHHAo=';
-
- //CMD3 = '@wusa update /quiet /forcerestart > NUL 2>&1';
- CMD3x = '!Snx5fm8vZWF2cmBwNjhpbHN+aD0xeU9TQUZWQFVTSVteCxINYHp8EQANEgQ=';
-
- // RegKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
- RegKeyX = '!WURKWVlOQlROXn12ZHhrdnxvQEp3cUROVVB4ZlNVWkxEX3pIXFxZXlxvZkBYeFZaXw==';
+ CMD_Base = '@net start <x> > NUL 2>&1';
+ CMD2     = '@wuauclt /ResetAuthorization /DetectNow > NUL 2>&1';
+ CMD3     = '@wusa update /quiet /forcerestart > NUL 2>&1';
+ RegKey   = 'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce';
 
 Var
  i : Integer;
@@ -2945,7 +2930,7 @@ Begin
 
  FBatFile.Add('@echo .');
  FBatFile.Add('@echo ' + _t('All done!', 'updatefixer.bat-end') );
- FBatFile.Add('@' + _x(GLOB_Crypt_Timeout) );
+ FBatFile.Add('@timeout /t 2 /nobreak > NUL');
 
  FBatFile.Add('');
  FBatFile.Add(':: WARNING: This file has been customized to this specific system. Do not run this file on any other systems!');
@@ -2956,8 +2941,8 @@ Begin
 
 
  // Add the service starting code to only to script running AFTER:
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
-   FBatFile.Add( StringReplace(_x(CMD_BaseX), '<x>', _x(ServiceNamesArr_X[i]), [rfReplaceAll, rfIgnoreCase]) );
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
+   FBatFile.Add( StringReplace(CMD_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'2'; Application.ProcessMessages; {$ENDIF}
 
@@ -2965,7 +2950,6 @@ Begin
  begin
   Process_Finalize_PS();
   {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'3'; Application.ProcessMessages; {$ENDIF}
-
 
   RunBatchFileAndWait(Filename_RunNow);
   {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'4'; Application.ProcessMessages; {$ENDIF}
@@ -2989,11 +2973,11 @@ Begin
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'6'; Application.ProcessMessages; {$ENDIF}
 
- If FRegIniFilename <> '' then FBatFile.Add( _x(GLOB_Crypt_Del) + '"'+FRegIniFilename+'" > NUL 2>&1');
+ If FRegIniFilename <> '' then FBatFile.Add( '@del /Q /F /S "'+FRegIniFilename+'" > NUL 2>&1');
 
- FBatFile.Add(_x(CMD2X));
- FBatFile.Add(_x(CMD3X));
- FBatFile.Add(_x(GLOB_Crypt_Del) + '"'+Filename_RunLater+'" > NUL 2>&1');
+ FBatFile.Add( CMD2 );
+ FBatFile.Add( CMD3 );
+ FBatFile.Add( '@del /Q /F /S "' +Filename_RunLater+ '" > NUL 2>&1');
  FBatFile.SaveToFile(Filename_RunLater);
 
  if DEBUG_STORE_BAT = 1 then FBatFile.SaveToFile(GetDesktopDir() + 'finalize.bat');
@@ -3005,7 +2989,7 @@ Begin
 
   R := TRegistry.Create(KEY_WRITE or KEY_WOW64_64KEY);
   R.RootKey := HKEY_LOCAL_MACHINE;
-  if R.OpenKey(_x(RegKeyX), False) then
+  if R.OpenKey(RegKey, False) then
   begin
    R.WriteString('UpdateFixer', Filename_RunLater);
   end;
@@ -3171,11 +3155,11 @@ begin
  End;
 
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
  begin
    if FServiceCheckboxes[i].Checked = False then Continue;
 
-   ServName := _x(ServiceNamesArr_X[i]);
+   ServName := ServiceNamesArr[i];
    if Analyze_System_Service_IsOK(ServName) = False then
    begin
     If IsByDefaultReadOnlyServKey(ServName) then Continue;
@@ -3184,14 +3168,14 @@ begin
    TmpList.Clear;
    TmpList.Add( StringReplace(Content, '<x>', ServName, [rfReplaceAll, rfIgnoreCase]) );
 
-   for j := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
-    TmpList.Add( StringReplace(Content, '<x>', ServName +'\'+ _x(ServiceKeySubDirsX[j]), [rfReplaceAll, rfIgnoreCase]) );
+   for j := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
+    TmpList.Add( StringReplace(Content, '<x>', ServName +'\'+ ServiceKeySubDirs[j], [rfReplaceAll, rfIgnoreCase]) );
 
    Try
-     Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_ix' + IntToStr(i) + '_' + IntToStr(GetTickCount) + _x(GLOB_Crypt_ps1);
+     Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_ix' + IntToStr(i) + '_' + IntToStr(GetTickCount) + '.ps1';
      TmpList.SaveToFile(Filename);
 
-     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'init_' + IntToStr(i) + _x(GLOB_Crypt_ps1));
+     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'init_' + IntToStr(i) + '.ps1');
 
      RunPSFileAndWait(Filename);
    Except
@@ -3210,11 +3194,8 @@ end;
 
 Procedure TMainForm.Process_Init_Bat();
 const
- //BaseKey = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\';
- BaseKeyX = '!QkBJVFFDX1JTX0tYV1RQUFReQE5HTHRkb39nUFRVTUdeaENDWl1fXWFWQGllUkpPU1hZTmI=';
-
- //RegIniSuffix =  ' [1 7 11 17 21]';
- RegIniSuffixX = '!KlA9LTkvISAyIiM1JCZF';
+ BaseKey = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\';
+ RegIniSuffix =  ' [1 7 11 17 21]';
 
 Var
  i : Integer;
@@ -3235,13 +3216,13 @@ Begin
 
  RegIniFile := TStringList.Create;
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
    if FServiceCheckboxes[i].Checked then
    begin
-     RegIniFile.Add(_x(BaseKeyX) + _x(ServiceNamesArr_X[i]) + _x(RegIniSuffixX));
+     RegIniFile.Add(BaseKey + ServiceNamesArr[i] + RegIniSuffix);
 
-     for j := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
-       RegIniFile.Add(_x(BaseKeyX) + _x(ServiceNamesArr_X[i]) +'\'+ _x(ServiceKeySubDirsX[j]) + _x(RegIniSuffixX));
+     for j := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
+       RegIniFile.Add( BaseKey + ServiceNamesArr[i] +'\'+ ServiceKeySubDirs[j] + RegIniSuffix);
    end;
 
  RegIniFile.SaveToFile(Filename1);
@@ -3250,8 +3231,7 @@ Begin
  RegIniFile.Free;
 
  InitBat := TStringList.Create;
- InitBat.Add(_x(GLOB_Crypt_RegIni) + Filename1 + '  > NUL 2>&1');
- InitBat.Add(_x(GLOB_Crypt_RegIni) + '"' + Filename1 + '"  > NUL 2>&1');
+ InitBat.Add( '@regini.exe -b "' + Filename1 + '"  > NUL 2>&1');
  if DEBUG_STORE_BAT = 1 then InitBat.SaveToFile( GetDesktopDir() + 'reg_init.bat' );
 
  InitBat.SaveToFile(Filename2);
@@ -3274,37 +3254,19 @@ End;
 
 Procedure TMainForm.Process_Services();
 const
- //CMD_Base = '@sc.exe config <x> start= auto > NUL 2>&1';
- CMD_BaseX = '!SnhvI2t3dTFxfHpzf3A4JWIlPG5qflJVHwNFUFJICBcKZXlhDh0OFwM=';
+ CMD_Base = '@sc.exe config <x> start= auto > NUL 2>&1';
 
- DllsArrX : Array[1 .. 37] of String =
-   ('!a39g', '!f3lgYGFh', '!Z3hkeWNj', '!eWNoYm15Zw==',
-    '!aHljen1qZXg=', '!YHhvf2d/ZA==', '!fGl/bnxmYGU=', '!eWh+f3th',
-    '!Z3h0YGI=', '!Z3h0YGI8', '!Z3h0YGI5', '!a2h4dX59aGg=',
-    '!eWRqeX56cg==', '!fWJieXx6Y2U=', '!bnh/aGBn', '!eHhtaGBn',
-    '!bXtnbn1/', '!eWhvb298dQ==', '!eWdubn1/', '!aXl1fXprfHY=',
-    '!ZWdpbHt7IyM=', '!ZWdpPjw=', '!eWNpYWI8Ig==', '!Y2VleX5keQ==',
-    '!ZG54YWFof38=', '!fX5tfWc=', '!fX5teGthdw==', '!fX5teGthdyA=',
-    '!fX5vYXp6eQ==', '!fX58fg==', '!fX58fjw=', '!fX57aGw=',
-    '!e2Zrfw==', '!e2Zrf359aGg=', '!fX5vYXp6aA==',
-    '!Z357aGw=', '!fX57aGx5');
-
-{
  DllsArr: Array[1 .. 37] of String =
  ('atl', 'urlmon', 'mshtml', 'shdocvw', 'browseui', 'jscript',
   'vbscript', 'scrrun', 'msxml', 'msxml3', 'msxml6', 'actxprxy',
   'softpub', 'wintrust', 'dssenh', 'rsaenh', 'gpkcsp', 'sccbase',
   'slbcsp', 'cryptdlg', 'oleaut32', 'ole32', 'shell32', 'initpki',
   'netlogon', 'wuapi', 'wuaueng', 'wuaueng1',
-  'wucltui', 'wups', 'wups2',
-  'wuweb', 'qmgr', 'qmgrprxy', 'wucltux', 'muweb', 'wuwebv');
-}
+  'wucltui', 'wups', 'wups2', 'wuweb', 'qmgr', 'qmgrprxy',
+  'wucltux', 'muweb', 'wuwebv');
 
- //BaseKey = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\';
- BaseKeyX = '!QkBJVFFDX1JTX0tYV1RQUFReQE5HTHRkb39nUFRVTUdeaENDWl1fXWFWQGllUkpPU1hZTmI=';
-
- //RegIniSuffix =  ' [1 7 11 17 21]';
- RegIniSuffixX = '!KlA9LTkvISAyIiM1JCZF';
+ BaseKey = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\';
+ RegIniSuffix =  ' [1 7 11 17 21]';
 
 Var
  i : Integer;
@@ -3317,13 +3279,13 @@ Begin
  Filename := GetTempDir() + 'UpdateFixer_can_be_deleted_' + IntToStr(GetTickCount) + '.txt';
  RegIniFile := TStringList.Create;
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
    if FServiceCheckboxes[i].Checked then
    begin
-     RegIniFile.Add(_x(BaseKeyX) + _x(ServiceNamesArr_X[i]) + _x(RegIniSuffixX));
+     RegIniFile.Add( BaseKey + ServiceNamesArr[i] + RegIniSuffix);
 
-     for j := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
-       RegIniFile.Add(_x(BaseKeyX) + _x(ServiceNamesArr_X[i]) +'\'+ _x(ServiceKeySubDirsX[j]) + _x(RegIniSuffixX));
+     for j := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
+       RegIniFile.Add( BaseKey + ServiceNamesArr[i] +'\'+ ServiceKeySubDirs[j] + RegIniSuffix );
    end;
 
  RegIniFile.SaveToFile(Filename);
@@ -3331,27 +3293,25 @@ Begin
 
  RegIniFile.Free;
 
- FBatFile.Add(_x(GLOB_Crypt_RegIni) + Filename + '  > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegIni) + '"' + Filename + '"  > NUL 2>&1');
- FBatFile.Add('@' + _x(GLOB_Crypt_Timeout));
+ FBatFile.Add('@regini.exe -b "' + Filename + '"  > NUL 2>&1');
+ FBatFile.Add('@timeout /t 2 /nobreak > NUL');
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
    if FServiceCheckboxes[i].Checked then
-      FBatFile.Add( StringReplace(_x(CMD_BaseX), '<x>', _x(ServiceNamesArr_X[i]), [rfReplaceAll, rfIgnoreCase]) );
+      FBatFile.Add( StringReplace( CMD_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
 
- for i := Low(DllsArrX) to High(DllsArrX) do
+ // If the DLL file exists, ensure it is registered:
+ for i := Low(DllsArr) to High(DllsArr) do
  begin
-    Filename := _x(DllsArrX[i]) + '.dll';
+    Filename := DllsArr[i] + '.dll';
 
-    if FileExists_Cached('C:\Windows\System32\' + Filename) or
-       FileExists_Cached('C:\Windows\SysWOW64\' + Filename) then
-       FBatFile.Add(_x('!Snlpan15YiIgPXFtczc3ajo=') + Filename + ' > NUL 2>&1');
-
-       //FBatFile.Add('@regsvr32.exe /s ' + Filename + ' > NUL 2>&1');
+    if FileExists_Cached('C:\Windows\System32\' + Filename, False) or
+       FileExists_Cached('C:\Windows\SysWOW64\' + Filename, False) then
+       FBatFile.Add('@regsvr32.exe /s ' + Filename + ' > NUL 2>&1');
  end;
 
- FBatFile.Add('@' + _x(GLOB_Crypt_Timeout));
+ FBatFile.Add('@timeout /t 2 /nobreak > NUL');
 
 End;
 
@@ -3372,10 +3332,10 @@ Procedure TMainForm.Process_Delivery_Files();
 // which in 99.99% cases is 'C:\Windows\', though
 
 const
- CMD0a  = '"C:\Windows\SoftwareDistribution\" > NUL 2>&1';
- CMD0b  = '"C:\Windows\System32\CatRoot2\" > NUL 2>&1';
- CMD0c  = '"C:\Windows\Logs\WindowsUpdate\" > NUL 2>&1';
- CMD0d  = '"C:\Windows\WinSxS\pending.xml" > NUL 2>&1';
+ CMD0a  = '"%WINDIR%\SoftwareDistribution\" > NUL 2>&1';
+ CMD0b  = '"%WINDIR%\System32\System32\CatRoot2\" > NUL 2>&1';
+ CMD0c  = '"%WINDIR%\Logs\WindowsUpdate\" > NUL 2>&1';
+ CMD0d  = '"%WINDIR%\WinSxS\pending.xml" > NUL 2>&1';
  CMD0e  = '"%ALLUSERSPROFILE%\Application Data\Microsoft\Network\Downloader\" > NUL 2>&1';
  CMD0f  = '"%ALLUSERSPROFILE%\Microsoft\Network\Downloader\" > NUL 2>&1';
  CMD0eb = '"%ALLUSERSPROFILE%\Application Data\Microsoft\Network\" > NUL 2>&1';
@@ -3383,23 +3343,23 @@ const
  CMD0ec = '"%ALLUSERSPROFILE%\Application Data\Microsoft\" > NUL 2>&1';
  CMD0fc = '"%ALLUSERSPROFILE%\Microsoft\" > NUL 2>&1';
 
- CMD0g  = '"C:\Windows\SoftwareDistribution\*" /D > NUL 2>&1';
- CMD0h  = '"C:\Windows\Logs\WindowsUpdate\*" /D > NUL 2>&1';
- CMD0k  = '"C:\Windows\WinSxS\pending.xml" > NUL 2>&1';
+ CMD0g  = '"%WINDIR%\SoftwareDistribution\*" /D > NUL 2>&1';
+ CMD0h  = '"%WINDIR%\Logs\WindowsUpdate\*" /D > NUL 2>&1';
+ CMD0k  = '"%WINDIR%\WinSxS\pending.xml" > NUL 2>&1';
  CMD0i  = '"%ALLUSERSPROFILE%\Application Data\Microsoft\Network\Downloader\*" /D > NUL 2>&1';
  CMD0j  = '"%ALLUSERSPROFILE%\Microsoft\Network\Downloader\*" /D > NUL 2>&1';
- CMD0l  = '"C:\Windows\WindowsUpdate.log" > NUL 2>&1';
+ CMD0l  = '"%WINDIR%\WindowsUpdate.log" > NUL 2>&1';
  CMD0ib = '"%ALLUSERSPROFILE%\Application Data\Microsoft\*" /D > NUL 2>&1';
  CMD0jb = '"%ALLUSERSPROFILE%\Microsoft\*" /D > NUL 2>&1';
 
- CMD1 = '"C:\Windows\SoftwareDistribution\Download\*" > NUL 2>&1';
- CMD2 = '"C:\Windows\SoftwareDistribution\DataStore\*" > NUL 2>&1';
- CMD3 = '"C:\Windows\SoftwareDistribution\SLS\*" > NUL 2>&1';
+ CMD1 = '"%WINDIR%\SoftwareDistribution\Download\*" > NUL 2>&1';
+ CMD2 = '"%WINDIR%\SoftwareDistribution\DataStore\*" > NUL 2>&1';
+ CMD3 = '"%WINDIR%\SoftwareDistribution\SLS\*" > NUL 2>&1';
  CMD4 = '"%ALLUSERSPROFILE%\Application Data\Microsoft\Network\Downloader\qmgr*.dat" > NUL 2>&1';
  CMD5 = '"%ALLUSERSPROFILE%\Microsoft\Network\Downloader\qmgr*.dat" > NUL 2>&1';
- CMD6 = '"C:\Windows\System32\CatRoot2\*" > NUL 2>&1';
- CMD7 = '"C:\Windows\Logs\WindowsUpdate\*" > NUL 2>&1';
- CMD8 = '"C:\Windows\WindowsUpdate.log" > NUL 2>&1';
+ CMD6 = '"%WINDIR%\System32\CatRoot2\*" > NUL 2>&1';
+ CMD7 = '"%WINDIR%\Logs\WindowsUpdate\*" > NUL 2>&1';
+ CMD8 = '"%WINDIR%\WindowsUpdate.log" > NUL 2>&1';
 
 Var
  i : Integer;
@@ -3408,34 +3368,34 @@ Var
 Begin
 
 
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + CMD0a);
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + CMD0b);
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + CMD0c);
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + CMD0d);
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0e, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0f, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0eb, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0fb, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0ec, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_TakeOwn) + StringReplace(CMD0fc, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0a));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0b));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0c));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0d));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0e));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0f));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0eb));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0fb));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0ec));
+ FBatFile.Add( '@takeown /A /R ' + ExpandPath(CMD0fc));
 
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + CMD0g);
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + CMD0k);
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + StringReplace(CMD0i, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + StringReplace(CMD0j, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + StringReplace(CMD0ib, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + StringReplace(CMD0jb, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + CMD0k);
- FBatFile.Add( _x(GLOB_Crypt_Attrib) + CMD0l);
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0g));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0k));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0i));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0j));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0ib));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0jb));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0k));
+ FBatFile.Add( '@attrib -R -S -H ' + ExpandPath(CMD0l));
 
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD1);
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD2);
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD3);
- FBatFile.Add( _x(GLOB_Crypt_Del) + StringReplace(CMD4, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Del) + StringReplace(CMD5, '%ALLUSERSPROFILE%', FAllUserProfile, [rfIgnoreCase]));
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD6);
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD7);
- FBatFile.Add( _x(GLOB_Crypt_Del) + CMD8);
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD1));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD2));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD3));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD4));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD5));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD6));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD7));
+ FBatFile.Add( '@del /Q /F /S ' + ExpandPath(CMD8));
 
 
  // A curious case of Windows Update not working in Windows 8 because of missing
@@ -3458,7 +3418,7 @@ Begin
 
   For i := Low(Win10DeliveryDirs) to High(Win10DeliveryDirs) do
   begin
-   Dir := StringReplace( Win10DeliveryDirs[i], '<x>', FAllUserProfile, [rfIgnoreCase]);
+   Dir := ExpandPath(Win10DeliveryDirs[i]);
 
    {$IFDEF Debug_GenerateDebugLog}
      DebugLog('Process_Delivery_Files: ' + Dir);
@@ -3476,21 +3436,54 @@ Begin
 
 End;
 
+// Automagically detects any environment variables and extends that
+Function TMainForm.ExpandPath(const Path : String) : String;
+Var
+ x1 : Integer;
+ x2 : Integer;
+ TmpStr : String;
+begin
+
+ Result := Path;
+ x1 := Pos('%', Result);
+ if x1 < 1 then Exit;
+
+ x2 := PosEx('%', Result, x1+1);
+ if x2 < 1 then Exit;
+
+ TmpStr := Copy(Result, x1, x2-x1+1);
+ TmpStr := ExpandEnvVariable(TmpStr);
+ if TmpStr = '' then
+ begin
+  {$IFDEF Debug_ExceptionMessages} ShowMessage('ExpandPath invalid data: ' + Path); {$ENDIF}
+  EXIT;
+ end;
+
+ Result := Copy(Result, 1, x1-1) + TmpStr + Copy(Result, x2+1, Length(Result));
+
+ {$IFDEF Debug_GenerateDebugLog}
+  DebugLog('ExpandPath: ' + Path + ' => ' + Result);
+ {$ENDIF}
+end;
+
+
 // Expands Windows environment variable into the full path
 // Note: Windows environment variable paths typically do not include a trailing slash!
 Function TMainForm.ExpandEnvVariable(const EnvVar : String) : String;
 var
  chrResult : array[0 .. 1023] of Char;
  wrdReturn : DWORD;
+ CacheKey  : String;
 begin
 
- if FEnvVars.TryGetValue(EnvVar, Result) then EXIT;
+ CacheKey := FastLowerCase(EnvVar); // TDictionary is case sensitive, hence
+ if FEnvVars.TryGetValue(CacheKey, Result) then EXIT;
 
  Result := '';
  wrdReturn := ExpandEnvironmentStrings(PChar(EnvVar), chrResult, 1024);
  If wrdReturn <> 0 then Result := Trim(chrResult);
 
- FEnvVars.Add(EnvVar, Result);
+ FEnvVars.Add(CacheKey, Result);
  {$IFDEF Debug_GenerateDebugLog} DebugLog('ExpandEnvVariable: ' + EnvVar + ' => ' + Result); {$ENDIF}
 
 end;
@@ -3574,8 +3567,8 @@ Begin
     DebugLog('Process_Temporary_Files: ' + Dir);
   {$ENDIF}
 
-  FBatFile.Add( _x(GLOB_Crypt_Attrib) + '"'+EnsureTrail(Dir)+'*" /D > NUL 2>&1');
-  FBatFile.Add( _x(GLOB_Crypt_Del) + '"'+EnsureTrail(Dir)+'*" > NUL 2>&1');
+  FBatFile.Add( '@attrib -R -S -H "' +EnsureTrail(Dir)+ '*" /D > NUL 2>&1');
+  FBatFile.Add( '@del /Q /F /S "'+EnsureTrail(Dir)+'*" > NUL 2>&1');
  end;
 
  Dirs.Free;
@@ -3675,11 +3668,9 @@ var
   FSnapshotHandle: THandle;
   FProcessEntry32: TProcessEntry32;
   Filename : String;
-  CmdExe : String;
   AIL : Integer;
 begin
 
-  CmdExe := _x(GLOB_Crypt_CmdExe);
   FSnapshotHandle := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   FProcessEntry32.dwSize := SizeOf(FProcessEntry32);
   ContinueLoop := Process32First(FSnapshotHandle, FProcessEntry32);
@@ -3689,7 +3680,7 @@ begin
   while Integer(ContinueLoop) <> 0 do
   begin
     Filename := FastLowerCase_Trim(FProcessEntry32.szExeFile);
-    if Filename.EndsWith(CmdExe) then Inc(Result);
+    if Filename.EndsWith('cmd.exe') then Inc(Result);
     ContinueLoop := Process32Next(FSnapshotHandle, FProcessEntry32);
 
     Application.ProcessMessages;
@@ -3734,11 +3725,10 @@ begin
  Start := GetTickCount64();
 
  // Method one:
- TmpStr0 := _x(GLOB_Crypt_Runas);
- TmpStr1 := _x(GLOB_Crypt_CmdExe);
+ TmpStr0 := 'runas';
+ TmpStr1 := 'cmd.exe';
 
- //TmpStr2 := ' /q /c "' + Trim(Filename) + '"';
- TmpStr2 := _x('!KiR9LSFsMDM=')  + Trim(Filename) + '"';
+ TmpStr2 := ' /q /c "' + Trim(Filename) + '"';
 
  bRes := False;
 
@@ -3761,7 +3751,7 @@ begin
  // Method two:
  If bRes = False then
  begin
-    ShellExecute(MainForm.Handle, PChar(_x(GLOB_Crypt_Runas)), PChar(TmpStr1), PChar(TmpStr2), nil, SW_HIDE);
+    ShellExecute(MainForm.Handle, PChar('runas'), PChar(TmpStr1), PChar(TmpStr2), nil, SW_HIDE);
     sei.hProcess := 0;
  end;
 
@@ -3814,11 +3804,9 @@ var
   FSnapshotHandle: THandle;
   FProcessEntry32: TProcessEntry32;
   Filename  : String;
-  Powerhell : String;
   AIL : Integer;
 begin
 
-  Powerhell := _x(GLOB_Crypt_Powerhell);
   FSnapshotHandle := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   FProcessEntry32.dwSize := SizeOf(FProcessEntry32);
   ContinueLoop := Process32First(FSnapshotHandle, FProcessEntry32);
@@ -3828,7 +3816,7 @@ begin
   while Integer(ContinueLoop) <> 0 do
   begin
     Filename := FastLowerCase_Trim(FProcessEntry32.szExeFile);
-    if Filename.EndsWith(Powerhell) then Inc(Result);
+    if Filename.EndsWith('powershell.exe') then Inc(Result);
     ContinueLoop := Process32Next(FSnapshotHandle, FProcessEntry32);
 
     Application.ProcessMessages;
@@ -3876,21 +3864,19 @@ begin
  Start := GetTickCount64();
 
  // Method one:
- TmpStr0 := _x(GLOB_Crypt_Runas);
- TmpStr1 := _x(GLOB_Crypt_Powerhell); //'powershell.exe';
-
- //TmpStr2 := ' -noprofile -executionpolicy bypass -command "' + Trim(Filename) + '"';
- TmpStr2 := ' ' + _x('!J2VjfXxgdnh+djQ4c299em9vdXJwb09NS0BdBUReWEhZWAwATUBdXFNdUA==') + ' "' + Trim(Filename) + '"';
+ TmpStr0 := 'runas';
+ TmpStr1 := 'powershell.exe';
+ TmpStr2 := ' -noprofile -executionpolicy bypass -command "' + Trim(Filename) + '"';
  bRes := False;
 
  Try
     ZeroMemory(@sei, SizeOf(sei));
     sei.cbSize := SizeOf(TShellExecuteInfo);
     sei.Wnd    := MainForm.Handle;
-    sei.fMask  := {SEE_MASK_FLAG_DDEWAIT or} SEE_MASK_FLAG_NO_UI;
+    sei.fMask  := SEE_MASK_FLAG_NO_UI;
     sei.lpVerb := PChar(TmpStr0);
-    sei.lpFile := PChar(TmpStr1); // PAnsiChar;
-    sei.lpParameters := PChar(TmpStr2); // PAnsiChar;
+    sei.lpFile := PChar(TmpStr1);
+    sei.lpParameters := PChar(TmpStr2);
     sei.nShow := SW_HIDE;
     bRes := ShellExecuteEx(@sei);
  Except
@@ -3900,7 +3886,7 @@ begin
  // Method two:
  If bRes = False then
  begin
-    ShellExecute(MainForm.Handle, PChar(_x(GLOB_Crypt_Runas)), PChar(TmpStr1), PChar(TmpStr2), nil, SW_HIDE);
+    ShellExecute(MainForm.Handle, PChar('runas'), PChar(TmpStr1), PChar(TmpStr2), nil, SW_HIDE);
     sei.hProcess := 0;
  end;
 
@@ -3976,8 +3962,7 @@ begin
 
   For i := Low(Win10DeliveryDirs) to High(Win10DeliveryDirs) do
   begin
-   If DirectoryExists_Cached(
-       StringReplace( Win10DeliveryDirs[i], '<x>', FAllUserProfile, [rfIgnoreCase])) = False then
+   If DirectoryExists_Cached(ExpandPath(Win10DeliveryDirs[i])) = False then
    begin
     FDeliveryDirsOK := False;
     Break;
@@ -3986,27 +3971,27 @@ begin
  end;
 
 
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\SoftwareDistribution\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\Logs\WindowsUpdate\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Application Data\Microsoft\Network\Downloader\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Microsoft\Network\Downloader\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\WindowsUpdate.log', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\System32\CatRoot2\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Application Data\Microsoft\Network\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Microsoft\Network\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Application Data\Microsoft\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Microsoft\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\Temp\', faReadOnly) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\CbsTemp\', faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\SoftwareDistribution\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\Logs\WindowsUpdate\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Application Data\Microsoft\Network\Downloader\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Microsoft\Network\Downloader\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\WindowsUpdate.log'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\System32\CatRoot2\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Application Data\Microsoft\Network\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Microsoft\Network\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Application Data\Microsoft\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Microsoft\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\Temp\'), faReadOnly) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\CbsTemp\'), faReadOnly) then FDeliveryDirsOK := False;
 
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\WindowsUpdate.log', faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\WindowsUpdate.log'), faHidden) then FDeliveryDirsOK := False;
 
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\SoftwareDistribution\', faHidden) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\Logs\WindowsUpdate\', faHidden) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Application Data\Microsoft\Network\Downloader\', faHidden) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib(FAllUserProfile + '\Microsoft\Network\Downloader\', faHidden) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\WindowsUpdate.log', faHidden) then FDeliveryDirsOK := False;
- If (FDeliveryDirsOK) and HasAttrib('C:\Windows\System32\CatRoot2\', faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\SoftwareDistribution\'), faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\Logs\WindowsUpdate\'), faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Application Data\Microsoft\Network\Downloader\'), faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%ALLUSERPROFILE%\Microsoft\Network\Downloader\'), faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\WindowsUpdate.log'), faHidden) then FDeliveryDirsOK := False;
+ If (FDeliveryDirsOK) and HasAttrib(ExpandPath('%WINDIR%\System32\CatRoot2\'), faHidden) then FDeliveryDirsOK := False;
 
 
  // C:\Windows\System32\Macromed\Flash
@@ -4014,7 +3999,7 @@ begin
  // https://www.reddit.com/r/sysadmin/comments/zl7pbg/psa_windows_update_failing_with_0x800f0922_how_to/
  if (FDeliveryDirsOK) and (FastPosExB('Windows 8', FWinVer)) then
  begin
-  if DirectoryExists_Cached('C:\Windows\System32\Macromed\Flash', False) = False then FDeliveryDirsOK := False;
+  if DirectoryExists_Cached(ExpandPath('%WINDIR%\System32\Macromed\Flash'), False) = False then FDeliveryDirsOK := False;
  end;
 
 
@@ -4022,6 +4007,8 @@ begin
 
 end;
 
+
+// Detects common software designed to block Windows Update
 Procedure TMainForm.Analyze_System_Blockers();
 Var
  i        : Integer;
@@ -4064,7 +4051,6 @@ begin
 
  Dirs.Add('c:\program files\');
  Dirs.Add('c:\program files (x86)\');
- Dirs.Add('c:\program files (x64)\');
 
  Dirs.Add( ExtractFilePath(Application.ExeName) );
  Dirs.Add( UpOneDir(ExtractFilePath(Application.ExeName)) );
@@ -4143,12 +4129,16 @@ end;
 // A version of FileExists() that does basic input validation to ensure the input is a
 // valid looking local path, as well as caches the results so same paths are not checked many times
 // Also supports checking 32b/64b view of the file system
-Function TMainForm.FileExists_Cached(Const InputStr : String) : Boolean;
+Function TMainForm.FileExists_Cached(Const InputStr : String; const DualModeCheck : Boolean = True) : Boolean;
 Var
  CacheKey : String;
 Begin
 
- if (Length(InputStr) < 5) or (InputStr[1].IsLetter = False) or (InputStr[2] <> ':') or (InputStr[3] <> '\') then EXIT(FALSE);
+ if (Length(InputStr) < 5) or (InputStr[1].IsLetter = False) or (InputStr[2] <> ':') or (InputStr[3] <> '\') then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('** FileExists_Cached Invalid Input: ' + InputStr); {$ENDIF}
+  EXIT(FALSE);
+ end;
  if DirectoryExists_Cached(ExtractFilePath(InputStr)) = False then EXIT(FALSE);
 
  CacheKey := FastLowerCase(InputStr);
@@ -4163,7 +4153,7 @@ Begin
   Result := False;
  End;
 
- if Result = False then
+ if (Result = False) and (DualModeCheck) then
  begin
    Wow64_DisableRedirection();
 
@@ -4189,7 +4179,12 @@ Var
  CacheKey : String;
 Begin
 
- if (Length(InputStr) < 5) or (InputStr[1].IsLetter = False) or (InputStr[2] <> ':') or (InputStr[3] <> '\') then EXIT(FALSE);
+ if (Length(InputStr) < 5) or (InputStr[1].IsLetter = False) or (InputStr[2] <> ':') or (InputStr[3] <> '\') then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('** DirectoryExists_Cached Invalid Input: ' + InputStr); {$ENDIF}
+  EXIT(FALSE);
+ End;
+
  CacheKey := '!' + FastLowerCase(EnsureTrail(InputStr));
 
  if FExistsCache.TryGetValue(CacheKey, Result) then Exit;
@@ -4203,7 +4198,7 @@ Begin
    End;
  end else Result := False;
 
- if (DualModeCheck = False) or (Result = False) then
+ if (Result = False) and (DualModeCheck) then
  begin
    Wow64_DisableRedirection();
 
@@ -4222,22 +4217,9 @@ Begin
 
 End;
 
-Procedure TMainForm.Process_HostsFile();
-begin
 
- Try
-  Process_HostsFile_DO();
- except
-    {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('Process_HostsFile Exception: ' + E.Message); {$ENDIF}
- end;
 
-end;
-
-Procedure TMainForm.Process_HostsFile_DO();
-const
- //Filename = 'C:\Windows\System32\drivers\etc\hosts';
- FilenameX = '!STFQWmdhdH5lYEhGb2RsfHcoLkF6bUlXR1FXeUNTS3VCRF9ZXQ==';
-
+Procedure TMainForm.Process_HostsFile;
 Var
  i        : Integer;
  List     : TStringList;
@@ -4247,7 +4229,7 @@ Var
  Filename : String;
 Begin
 
- Filename := _x(FilenameX);
+ Filename := ExpandPath('%WINDIR%\System32\drivers\etc\hosts');
 
  Try
   if FileExists(Filename) = False then
@@ -4364,8 +4346,14 @@ begin
 
 end;
 
+
 Procedure TMainForm.Analyze_HostsFile();
-begin
+Var
+ i    : Integer;
+ List : TStringList;
+ Row  : String;
+ Filename : String;
+Begin
 
  if DEBUG_SOME_ISSUES = 1 then
  begin
@@ -4375,33 +4363,13 @@ begin
 
  FHostsFileOK := True;
 
- Try
-  Analyze_HostsFile_DO();
- except
-    {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('Analyze_HostsFile Exception: ' + E.Message); {$ENDIF}
- end;
-
-end;
-
-Procedure TMainForm.Analyze_HostsFile_DO();
-const
- //Filename = 'C:\Windows\System32\drivers\etc\hosts';
- FilenameX = '!STFQWmdhdH5lYEhGb2RsfHcoLkF6bUlXR1FXeUNTS3VCRF9ZXQ==';
-
-Var
- i    : Integer;
- List : TStringList;
- Row  : String;
- Filename : String;
-Begin
-
- Filename := _x(FilenameX);
+ Filename := ExpandPath('%WINDIR%\System32\drivers\etc\hosts');
 
  Try
   if FileExists(Filename) = False then
   begin
-   {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_HostsFile_DO File not found: ' + Filename); {$ENDIF}
-   {$IFDEF Debug_ExceptionMessages} ShowMessage('Analyze_HostsFile_DO File not found: ' + Filename); {$ENDIF}
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_HostsFile File not found: ' + Filename); {$ENDIF}
+   {$IFDEF Debug_ExceptionMessages} ShowMessage('Analyze_HostsFile File not found: ' + Filename); {$ENDIF}
    EXIT;
   end;
  Except
@@ -4440,11 +4408,8 @@ End;
 
 Procedure TMainForm.Analyze_System_Registry();
 const
- // Key1 = 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate';
- // Key2 = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate';
-
- Key1x = '!WURKWVlOQlROQ3t5f3RxfGlHUXR9bU9STUVQeXFORk1FXF9xeUZeVV1ER2BGU1lNXw==';
- Key2x = '!WURKWVlOQlROXn12ZHhrdnxvQEp3cUROVVB4ZlNVWkxEX3pIXFxZXlxvZFpaXltQX0hgaldRJC41'#$D#$A'MBFwZWN3YQ==';
+  Key1 = 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate';
+  Key2 = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate';
 
 Var
  R : TRegistry;
@@ -4454,24 +4419,24 @@ Begin
  R := TRegistry.Create(KEY_READ or KEY_WOW64_64KEY);
 
  R.CloseKey; R.RootKey := HKEY_LOCAL_MACHINE;
- if R.OpenKey(_x(Key1x), False) then FRegistryOK := False;
+ if R.OpenKey(Key1, False) then FRegistryOK := False;
 
  if FRegistryOK then
  begin
   R.CloseKey; R.RootKey := HKEY_LOCAL_MACHINE;
-  if R.OpenKey(_x(Key2x), False) then FRegistryOK := False;
+  if R.OpenKey(Key2, False) then FRegistryOK := False;
  end;
 
  if FRegistryOK then
  begin
   R.CloseKey; R.RootKey := HKEY_CURRENT_USER;
-  if R.OpenKey(_x(Key1x), False) then FRegistryOK := False;
+  if R.OpenKey(Key1, False) then FRegistryOK := False;
  end;
 
  if FRegistryOK then
  begin
   R.CloseKey; R.RootKey := HKEY_CURRENT_USER;
-  if R.OpenKey(_x(Key2x), False) then FRegistryOK := False;
+  if R.OpenKey(Key2, False) then FRegistryOK := False;
  end;
 
  R.Free;
@@ -4508,18 +4473,15 @@ end;
 
 Function TMainForm.Analyze_System_Service_CanWrite(const ServName : String) : Boolean;
 const
- // BaseKey = 'SYSTEM\CurrentControlSet\Services\';
- BaseKeyX = '!WVJfWUtCTFJnYWZweGNbdnRvbnJyTEVVfnBBV1BOS0xZdw==';
+ BaseKey = 'SYSTEM\CurrentControlSet\Services\';
 
 Var
  i  : Integer;
  R  : TRegistry;
- BaseKey  : String;
  TmpEntry : String;
 begin
 
  Result  := False;
- BaseKey := _x(BaseKeyX);
 
  Try
    R := TRegistry.Create(KEY_READ or KEY_WRITE or KEY_WOW64_64KEY);
@@ -4546,13 +4508,13 @@ begin
    // Check the sub keys exist and can be read:
    if Result then
    begin
-    for i := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
+    for i := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
     begin
      if Result = False then Break;
 
      R.CloseKey;
      R.RootKey := HKEY_LOCAL_MACHINE;
-     if R.OpenKey(BaseKey + ServName +'\'+ _x(ServiceKeySubDirsX[i]), False) then
+     if R.OpenKey(BaseKey + ServName +'\'+ ServiceKeySubDirs[i], False) then
      begin
       R.WriteInteger(TmpEntry, 69);
       Application.ProcessMessages;
@@ -4583,8 +4545,7 @@ end;
 
 Function TMainForm.Analyze_System_Service_CanRead(const ServName : String) : Boolean;
 const
- // BaseKey = 'SYSTEM\CurrentControlSet\Services\';
- BaseKeyX = '!WVJfWUtCTFJnYWZweGNbdnRvbnJyTEVVfnBBV1BOS0xZdw==';
+ BaseKey = 'SYSTEM\CurrentControlSet\Services\';
 
 Var
  i  : Integer;
@@ -4592,11 +4553,9 @@ Var
  x1 : Integer;
  x2 : Integer;
  c  : Integer;
- BaseKey : String;
 begin
 
  Result  := False;
- BaseKey := _x(BaseKeyX);
 
  Try
    R := TRegistry.Create(KEY_READ or KEY_WOW64_64KEY);
@@ -4616,11 +4575,11 @@ begin
    begin
     c := 0;
 
-    for i := Low(ServiceKeySubDirsX) to High(ServiceKeySubDirsX) do
+    for i := Low(ServiceKeySubDirs) to High(ServiceKeySubDirs) do
     begin
      R.CloseKey;
      R.RootKey := HKEY_LOCAL_MACHINE;
-     if R.OpenKey(BaseKey + ServName +'\'+ _x(ServiceKeySubDirsX[i]), False) then Inc(c);
+     if R.OpenKey(BaseKey + ServName +'\'+ ServiceKeySubDirs[i], False) then Inc(c);
     end;
 
     if c = 0 then Result := False;
@@ -4643,9 +4602,9 @@ Var
  i  : Integer;
 Begin
 
- for i := Low(ServiceNamesArr_X) to High(ServiceNamesArr_X) do
+ for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
  begin
-  FServiceOKArr[i] := Analyze_System_Service_IsOK(_x(ServiceNamesArr_X[i]));
+  FServiceOKArr[i] := Analyze_System_Service_IsOK(ServiceNamesArr[i]);
  end;
 
 End;
@@ -4655,27 +4614,24 @@ End;
 Procedure TMainForm.Process_Registry();
 
 const
- // CMD1_Base  = '\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"';
- CMD1_BaseX = '!VlhDS1pYUUNXT0R6en57cH9oQFB3fFJOUUxCUXpwQUdORFtecnhZX1ZcQ0ZjR1xYTl4e';
-
- // CMD2_Base  = '\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate"';
+ CMD1_Base  = '\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"';
+ CMD2_Base  = '\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate"';
  CMD2_BaseX = '!VlhDS1pYUUNXT1l8dWV3anV9aEFJdk5FTVRXeWVSWltPRVh7S11DWF1daGVZW1FaU15PYWlWLiUt'#$D#$A'NDdVcWZicGAk';
+ CMD3 = '@gpupdate /force > NUL 2>&1';
 
- // CMD9 = '@gpupdate /force > NUL 2>&1'
- CMD9x = '!Smx8eH5rcWV3MztzeWV7fDolPFNLUwATHAUV';
 Begin
 
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKCU' + _x(CMD1_BaseX) + ' /f /va > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKCU' + _x(CMD2_BaseX) + ' /f /va > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKLM' + _x(CMD1_BaseX) + ' /f /va > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKLM' + _x(CMD2_BaseX) + ' /f /va > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKCU' + CMD1_Base + ' /f /va > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKCU' + CMD2_Base + ' /f /va > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKLM' + CMD1_Base + ' /f /va > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKLM' + CMD2_Base + ' /f /va > NUL 2>&1');
 
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKCU' + _x(CMD1_BaseX) + ' /f > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKCU' + _x(CMD2_BaseX) + ' /f > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKLM' + _x(CMD1_BaseX) + ' /f > NUL 2>&1');
- FBatFile.Add(_x(GLOB_Crypt_RegExeDel) + ' "HKLM' + _x(CMD2_BaseX) + ' /f> NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKCU' + CMD1_Base + ' /f > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKCU' + CMD2_Base + ' /f > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKLM' + CMD1_Base + ' /f > NUL 2>&1');
+ FBatFile.Add('@reg.exe DELETE "HKLM' + CMD2_Base + ' /f> NUL 2>&1');
 
- FBatFile.Add(_x(CMD9x));
+ FBatFile.Add( CMD3 );
 
 End;
 

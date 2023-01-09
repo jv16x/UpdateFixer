@@ -3,7 +3,7 @@ object MainForm: TMainForm
   Top = 218
   Caption = 'Update Fixer'
   ClientHeight = 1236
-  ClientWidth = 1854
+  ClientWidth = 1867
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
