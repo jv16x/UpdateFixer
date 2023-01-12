@@ -5608,10 +5608,15 @@ object MainForm: TMainForm
     Visible = False
   end
   object pnlMainParent: TPTZPanel
+    AlignWithMargins = True
     Left = 16
     Top = 24
     Width = 457
     Height = 697
+    Margins.Left = 2
+    Margins.Top = 2
+    Margins.Right = 2
+    Margins.Bottom = 2
     Color = clWhite
     BorderColor = clRed
     BorderWidth = 5
@@ -5672,10 +5677,9 @@ object MainForm: TMainForm
       ExplicitWidth = 1262
     end
     object pnlWindowTitle: TColorPanel
-      AlignWithMargins = True
-      Left = 2
-      Top = 2
-      Width = 453
+      Left = 0
+      Top = 0
+      Width = 457
       Height = 30
       Margins.Left = 2
       Margins.Top = 2
@@ -5790,7 +5794,7 @@ object MainForm: TMainForm
       end
       object hlistWinControls: TGUIPanelHList
         AlignWithMargins = True
-        Left = 423
+        Left = 427
         Top = 0
         Width = 30
         Height = 30
@@ -5829,7 +5833,7 @@ object MainForm: TMainForm
     object vlistDone: TGUIPanelVList
       AlignWithMargins = True
       Left = 3
-      Top = 35
+      Top = 33
       Width = 451
       Height = 384
       AutoSizeW = False
@@ -7527,11 +7531,6 @@ object MainForm: TMainForm
     Left = 648
     Top = 1088
   end
-  object ApplicationEvents: TApplicationEvents
-    OnException = ApplicationEventsException
-    Left = 448
-    Top = 1088
-  end
   object PopupMenu_Rec: TPopupMenu
     Tag = 2
     OnPopup = PopupMenu_RecPopup
@@ -7565,7 +7564,14 @@ object MainForm: TMainForm
   object tmrUpdateUiSelections: TTimer
     Enabled = False
     OnTimer = tmrUpdateUiSelectionsTimer
-    Left = 1072
-    Top = 904
+    Left = 1096
+    Top = 936
+  end
+  object tmrUpdateUI: TTimer
+    Enabled = False
+    OnTimer = tmrUpdateUITimer
+    Left = 1096
+    Top = 824
   end
 end
+
