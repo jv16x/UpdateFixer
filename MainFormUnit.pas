@@ -1,8 +1,9 @@
-﻿unit MainFormUnit;
+unit MainFormUnit;
 
 {
-  Update Fixer version 1.1
+  Update Fixer version 1.2
   By Jouni Flemming (Macecraft Software)
+  Copyright 2023 Jouni Flemming
 
   Official website: https://winupdatefixer.com/
   Source code license: GNU General Public License v3
@@ -66,6 +67,15 @@
 
   ** Change Log **
 
+  Changes since version 1.1
+
+  1) The app window can now be resized in its results show view.
+  2) Improved the Debug_GenerateDebugLog directive support and debug log content.
+  3) Split Process_Init_Pas() into two functions and fixed many bugs there.
+  4) Removed Debug_ExceptionMessages directive. Debug_GenerateDebugLog is better anyway.
+  5) Removed DEBUG_WRITE_LOG, because Debug_GenerateDebugLog is better anyway.
+
+
   Changes since version 1.0
 
   1) Removed the use of encrypted strings in order to improve code readability. They were used to
@@ -81,9 +91,6 @@
 
 interface
 
-
-// If enabled, displays any exception and error message to the user
-{.$DEFINE Debug_ExceptionMessages}
 
 // If enabled, generates a debug log to user's Windows Desktop
 {.$DEFINE Debug_GenerateDebugLog}
@@ -101,10 +108,13 @@ uses
   System.SysUtils,
   System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
-  PTZStdCtrls, Registry, IniFiles,
+  Registry, IniFiles,
   Generics.Collections,
-  uMiniStringTools, ShellAPI,
-  GUIPanelHVList, PTZWinControlButton,
+  uMiniStringTools,
+  ShellAPI,
+  PTZStdCtrls, GUIPanelHVList, PTZPanel,
+  PTZGlyphButton, PTZProgressBar,
+  PTZWinControlButton, ColorPanel,
   GUIPanel, Vcl.Imaging.pngimage,
   Vcl.Themes, Math,
   System.NetEncoding,
@@ -116,19 +126,19 @@ uses
   Win64bitDetector,
   System.Win.TaskbarCore, System.Win.Taskbar,
   FastStringCaseUtils, InternetUtils,
-  Vcl.ExtCtrls, ColorPanel, PTZPanel,
-  Vcl.StdCtrls, PTZGlyphButton, PTZProgressBar,
-  Vcl.AppEvnts, Vcl.Imaging.GIFImg, Vcl.Menus;
+  Vcl.ExtCtrls,
+  Vcl.StdCtrls,
+  Vcl.AppEvnts,
+  Vcl.Imaging.GIFImg, Vcl.Menus;
 
 const
- APP_VERSION       = '1.1';
+ APP_VERSION       = '1.2';
  DEBUG_STORE_BAT   = 0; // If 1, saves all the generated script files to user's desktop.
  DEBUG_PIRATED     = 0; // If 1, the pirated Windows detection will always detect OS as pirated in order to test how the UI looks like
  DEBUG_NO_ISSUES   = 0; // If 1, the analysis shall not find any problems in order to test how the UI looks like
  DEBUG_SOME_ISSUES = 0; // If 1, the analysis shall always find some problems in order to test how the UI looks like
  DEBUG_NO_BATCH    = 0; // If 1, the fixing shall not use any batch files
  DEBUG_SHOW_WINVER = 0; // If 1, the UI will display contents of FWinVer (version of Windows)
- DEBUG_WRITE_LOG   = 0; // If 1, the app will generate a debug log to user's desktop
 
 
 
@@ -176,7 +186,6 @@ type
     pnlWaiting: TPanel;
     ProgressBar: TPTZProgressBar;
     lblDebug: TLabel;
-    ApplicationEvents: TApplicationEvents;
     imgSpinner_DM_128: TImage;
     imgSpinner_NM_128: TImage;
     lblWorking: TLabel;
@@ -258,6 +267,7 @@ type
     SelectNone2: TMenuItem;
     tmrUpdateUiSelections: TTimer;
     lblDone2: TLabel;
+    tmrUpdateUI: TTimer;
     procedure btnWinCloseClick(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure tmrShowTimer(Sender: TObject);
@@ -270,7 +280,6 @@ type
     procedure lblFooterMouseEnter(Sender: TObject);
     procedure lblFooterMouseLeave(Sender: TObject);
     procedure btnFixClick(Sender: TObject);
-    procedure ApplicationEventsException(Sender: TObject; E: Exception);
     procedure lblFooter2MouseEnter(Sender: TObject);
     procedure lblFooter2MouseLeave(Sender: TObject);
     procedure btnCloseClick(Sender: TObject);
@@ -298,6 +307,7 @@ type
       Shift: TShiftState; X, Y: Integer);
     procedure tmrUpdateUiSelectionsTimer(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+    procedure tmrUpdateUITimer(Sender: TObject);
   private
     FAppDir            : String; // With a trailing slash
     FPTAppDir          : String; // With a trailing slash
@@ -307,13 +317,16 @@ type
     FWinVer            : String; // Version of Windows, e.g. 'Windows 10'
     FUI_DarkMode       : Boolean; // UI in Dark Mode or not
     FUI_AutoPos        : Boolean; // Whether app window should be automatically centered
-    FMIN_APP_HEIGHT    : Integer;
-    FMIN_APP_WIDTH     : Integer;
-    FMAX_APP_WIDTH     : Integer;
+    FUI_AllowResizing  : Boolean; // Whether app window can be resized, i.e. only in the analysis results view
+    FUI_MIN_HEIGHT     : Integer;
+    FUI_MIN_WIDTH      : Integer;
+    FUI_MAX_WIDTH      : Integer;
+    FUI_MAX_HEIGHT     : Integer;
+    FUI_BORDER_WIDTH   : Integer;
     FLastTmrShowRun    : UInt64;
     FLastTmrStarted    : UInt64;
     FUISelUpdLock      : Boolean;
-    FDebugLog          : TStringList;
+    FUIGenUpdLock      : Boolean;
     FCheckboxes        : TList<TPTZCheckBox>;
     FServiceCheckboxes : TList<TPTZCheckBox>;
     FServiceLabels     : TList<TLabel>;
@@ -328,7 +341,12 @@ type
     FBlockerRemoval    : TStringList;
     FRegIniFilename    : String;
 
-    FDebugLogFile      : String;
+    {$IFDEF Debug_GenerateDebugLog}
+      FDebugLog        : TStringList;
+      FDebugLogFile    : String;
+      FErrors          : Integer; // Number of critical errors detected
+    {$ENDIF}
+
     FDeliveryDirsOK    : Boolean;
     FFreeSpaceOK       : Boolean;
     FHostsFileOK       : Boolean;
@@ -336,8 +354,9 @@ type
     FServiceOKArr      : Array[0 .. 5] of Boolean;
     FRegistryOK        : Boolean;
     FBlockersFound     : Boolean;
-    FCmdResultFile     : String;
+    FWinGenCheckResultFile     : String;
     FPriviledgeSet     : Boolean;
+    FUI_WindowSizeSet  : Boolean;
 
     procedure Init_AppDirs();
     procedure Init_LoadColorScheme();
@@ -353,6 +372,7 @@ type
 
     Procedure SetLabelHeight(const Lbl : TLabel; const ExtraMargin : Integer = 0);
     Procedure UI_UpdateDynamicContent();
+    Procedure UI_SetWindowSize();
     Procedure UI_UpdateSelectionCounts();
     Procedure UI_UpdateSelectionCounts_DO();
     Procedure UI_Setup_TabOrder();
@@ -394,10 +414,10 @@ type
     Function GetDriveFreeSpaceGB() : Integer;
     Function ShellExecuteDo(Const FileName: string; Const Params: string = ''): Boolean;
 
-    function SID_GetUserSID() : Pointer;
-    function MyGetUserName(): String;
-    function MyGetComputerName(): String;
     Function GetAllUserDirs() : TStringList;
+
+    // Used for bsNone form resizing via user input:
+    procedure WM_NCHitTestHandler(var Msg: TWMNCHitTest); message WM_NCHitTest;
   public
     Function IsByDefaultReadOnlyServKey(const ServName : String) : Boolean;
     Function Analyze_System_Service_CanRead(const ServName : String) : Boolean;
@@ -411,14 +431,17 @@ type
     Procedure Analyze_HostsFile();
     Procedure Analyze_WinVer();
 
+    Function Analyze_CanWrite() : Boolean;
     Procedure Analyze_Start_Cmd();
     Function Analyze_GenuineWindows_CheckFile(const Filename : String) : Boolean;
     Procedure Analyze_GenuineWindows();
+    Function GetFileSize(const Filename : String) : Int64; // in bytes
 
     Procedure Process_Init();
     Procedure Process_Init_Bat();
     Procedure Process_Init_PS();
     Procedure Process_Init_Pas();
+    Function Process_Init_Pas_DO(const ServName : String) : Integer;
 
     Procedure Process_Finalize();
     Procedure Process_Finalize_PS();
@@ -433,6 +456,12 @@ type
 
 var
   MainForm: TMainForm;
+
+
+  // The UI colors are defined as global variables instead of consts,
+  // because these colors are changed depending whether we are using
+  // Dark Mode or Light Mode UI
+
   Color_NavBack    : TColor;
   Color_MainBack   : TColor;
   Color_MainFont   : TColor;
@@ -444,27 +473,123 @@ var
   Color_Btn_FocusColor        : TColor = 15461355; // RGB(235,235,235);
   Color_Btn_FocusBorderColor  : TColor = 16752680; // RGB(40,160,255);
 
-
 implementation
 
 {$R *.dfm}
 
 
 
-procedure TMainForm.ApplicationEventsException(Sender: TObject; E: Exception);
+procedure TMainForm.WM_NCHitTestHandler(var Msg: TWMNCHitTest);
+var
+ deltaRect : TRect;
+ bResize : Boolean;
 begin
 
- {$IFDEF Debug_GenerateDebugLog}
- DebugLog('ApplicationEventsException: ' + E.Message);
- {$ENDIF}
+ inherited;
 
- {$IFDEF Debug_ExceptionMessages}
- ShowMessage('ApplicationEventsException: ' + E.Message);
- {$ENDIF}
+ if FUI_AllowResizing = False then EXIT;
+ if Msg.Result = htClient then Msg.Result := htCaption;
+
+ with Msg, deltaRect do
+ begin
+      Left   := XPos - BoundsRect.Left;
+      Right  := BoundsRect.Right - XPos;
+      Top    := YPos - BoundsRect.Top;
+      Bottom := BoundsRect.Bottom - YPos;
+      bResize := False;
+
+      if (Top <= FUI_BORDER_WIDTH) and (Left <= FUI_BORDER_WIDTH) then
+      begin
+       Result := HTTOPLEFT;
+       bResize := True;
+      end
+      else if (Top < FUI_BORDER_WIDTH) and (Right < FUI_BORDER_WIDTH) then
+      begin
+        Result := HTTOPRIGHT;
+        bResize := True;
+      end
+      else if (Bottom <= FUI_BORDER_WIDTH) and (Left <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTBOTTOMLEFT;
+        bResize := True;
+      end
+      else if (Bottom <= FUI_BORDER_WIDTH) and (Right <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTBOTTOMRIGHT;
+        bResize := True;
+      end
+      else if (Top <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTTOP;
+        bResize := True;
+      end
+      else if (Left <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTLEFT;
+        bResize := True;
+      end
+      else if (Bottom <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTBOTTOM;
+        bResize := True;
+      end
+      else if (Right <= FUI_BORDER_WIDTH) then
+      begin
+        Result := HTRIGHT;
+        bResize := True;
+      end;
+
+      if bResize then
+      begin
+       FUI_AutoPos := False;
+       tmrUpdateUI.Enabled := True;
+      end;
+ end;
 
 end;
 
 
+Function TMainForm.Analyze_CanWrite() : Boolean;
+Var
+ Dir      : String;
+ Filename : String;
+ List     : TStringList;
+ TmpStr   : String;
+begin
+
+
+ Try
+  Dir := GetTempDir();
+
+  Filename := Dir + 'UpdateFixer_can_delete_write_test_' + IntToStr(GetTickCount) + '.tmp';
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_CanWrite: ' + FileName); {$ENDIF}
+
+  List := TStringList.Create;
+  List.Add('Foobar');
+  List.SaveToFile(Filename, TEncoding.UTF8);
+  List.Free;
+
+  TmpStr := Trim(RawReadFile_UTF8(Filename));
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_CanWrite File Content: ' + TmpStr); {$ENDIF}
+
+  If TmpStr = 'Foobar' then
+  begin
+   Result := True;
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_CanWrite: OK'); {$ENDIF}
+  end;
+
+  DeleteFile(Filename);
+  if FileExists_Cached(Filename) then
+  begin
+   Result := False;
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: Analyze_CanWrite File Delete Failed?'); {$ENDIF}
+  end;
+
+ Except
+  Result := False;
+ End;
+
+end;
 
 Procedure TMainForm.Analyze_Start_Cmd();
 Const
@@ -473,8 +598,8 @@ begin
 
  if DEBUG_NO_BATCH = 1 then EXIT;
 
- FCmdResultFile := GetTempDir() + 'update_fixer_can_be_deleted_' + IntToStr(GetTickCount) +'.tmp';
- ShellExecuteDo('cmd.exe', '/C ' + ExpandPath(Cmd) + ' > "' + FCmdResultFile + '"');
+ FWinGenCheckResultFile := GetTempDir() + 'update_fixer_can_be_deleted_' + IntToStr(GetTickCount) +'.tmp';
+ ShellExecuteDo('cmd.exe', '/C ' + ExpandPath(Cmd) + ' > "' + FWinGenCheckResultFile + '"');
 
 end;
 
@@ -513,9 +638,18 @@ Var
 begin
  Result := False;
 
- if FileExists_Cached(Filename) = False then EXIT;
+ if FileExists_Cached(Filename) = False then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows_CheckFile File does not exist: ' + ExtractFilename(Filename)); {$ENDIF}
+  EXIT;
+ End;
 
  FileData := RawReadFile_UTF8(Filename);
+ if Length(FileData) < 5 then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows_CheckFile: (nodata)'); {$ENDIF}
+  EXIT;
+ end;
 
 
  if FastPosExB('license', FileData) then Result := True;
@@ -531,6 +665,58 @@ begin
 
 end;
 
+
+
+Function TMainForm.GetFileSize(const Filename : String) : Int64;
+var
+ Sr : TSearchRec;
+begin
+
+ Result := -1;
+
+ Try
+   Try
+    Sr.FindData.nFileSizeHigh := 0;
+    Sr.FindData.nFileSizeLow := 0;
+    FindFirst(Filename, faAnyFile, Sr);
+    Result := Int64(Sr.FindData.nFileSizeHigh) shl Int64(32) +
+              Int64(Sr.FindData.nFileSizeLow);
+
+    {$IFDEF Debug_GenerateDebugLog} DebugLog('GetFileSize ' + ExtractFilename(Filename) + ' [32b]: ' + IntToStr(Result)); {$ENDIF}
+   Finally
+    if Result < 0 then Result := 0;
+   	FindClose(sr);
+   End;
+
+   if (Result < 1) and
+      (Is64bitWindows()) and
+      (Assigned(GLOBAL_Wow64RevertWow64FsRedirection)) and
+      (Assigned(GLOBAL_Wow64DisableWow64FsRedirection)) then
+   begin
+    GLOBAL_Wow64DisableWow64FsRedirection(GLOBAL_Wow64FsEnableRedirection);
+
+     Try
+      Sr.FindData.nFileSizeHigh := 0;
+      Sr.FindData.nFileSizeLow := 0;
+      FindFirst(Filename, faAnyFile, Sr);
+      Result := Int64(Sr.FindData.nFileSizeHigh) shl Int64(32) +
+                Int64(Sr.FindData.nFileSizeLow);
+
+      {$IFDEF Debug_GenerateDebugLog} DebugLog('GetFileSize ' + ExtractFilename(Filename) + ' [64b]: ' + IntToStr(Result)); {$ENDIF}
+     Finally
+      if Result < 0 then Result := 0;
+      FindClose(sr);
+      GLOBAL_Wow64RevertWow64FsRedirection(GLOBAL_Wow64FsEnableRedirection);
+     End;
+   End;
+
+ Except
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: GetFileSize ' + ExtractFilename(Filename) + ' FAIL'); {$ENDIF}
+  Exit(-1);
+ End;
+
+End;
+
 Procedure TMainForm.Analyze_GenuineWindows();
 Var
  i          : Integer;
@@ -542,8 +728,38 @@ Var
 begin
 
 
+ // Method 1: check whether Windows activation related files are missing or null
+ Filename := ExpandPath('%WINDIR%\System32\slmgr.vbs');
+ GetFileSize(Filename);
+ If (FileExists_Cached(Filename) = False) or
+    (GetFileSize(Filename) < 1000*50) then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Exit-1'); {$ENDIF}
+  FPiratedWindows := True;
+  EXIT;
+ end;
+
+ Filename := ExpandPath('%WINDIR%\System32\slui.exe');
+ GetFileSize(Filename);
+ If (FileExists_Cached(Filename) = False) or
+    (GetFileSize(Filename) < 1000*100) then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Exit-2'); {$ENDIF}
+  FPiratedWindows := True;
+  EXIT;
+ end;
+
+
+
  // Method 1:
- If Analyze_GenuineWindows_CheckFile(FCmdResultFile) then EXIT;
+ If FileExists_Cached(FWinGenCheckResultFile) then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Primary Check Start'); {$ENDIF}
+  If Analyze_GenuineWindows_CheckFile(FWinGenCheckResultFile) then EXIT;
+ end else
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Primary Check SKIPPED'); {$ENDIF}
+ end;
 
 
  // Method 2 - should only happen in non English Windows:
@@ -553,14 +769,16 @@ begin
  // of running the original vbs file.
  // Todo: To detect whether user is using a genuine Windows with a more elegant way
  Filename := ExpandPath('%WINDIR%\System32\slmgr.vbs');
- If FileExists_Cached(Filename) = False then
+ ScriptData := TStringList.Create;
+ ScriptData.text := RawReadFile_UTF8(Filename);
+
+ if ScriptData.Count < 1000 then
  begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Exit-3'); {$ENDIF}
+  ScriptData.Free;
   FPiratedWindows := True;
   EXIT;
  end;
-
- ScriptData := TStringList.Create;
- ScriptData.text := RawReadFile_UTF8(Filename);
 
  i := 0;
  While i <= ScriptData.Count-5 do
@@ -582,21 +800,27 @@ begin
   end;
  end;
 
- Filename := FTempDir + 'se_can_delete_qq_' + IntToStr(GetTickCount64()) + '.vbs';
- TmpFile  := FTempDir + 'se_can_delete_qq_' + IntToStr(GetTickCount64()) + '.tmp';
+ Filename := GetTempDir() + 'se_can_delete_qq_' + IntToStr(GetTickCount64()) + '.vbs';
+ TmpFile  := GetTempDir() + 'se_can_delete_qq_' + IntToStr(GetTickCount64()) + '.tmp';
 
  Try
-  ScriptData.SaveToFile(Filename);
- Except
-  ;
- End;
+  ScriptData.SaveToFile(Filename, TEncoding.ANSI); // Important: VBS scripts don't like no UTF8 encoding!
+ except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Analyze_GenuineWindows Save Exception: ' + E.Message); {$ENDIF}
+ end;
 
  ScriptData.Free;
- If FileExists_Cached(Filename) = False then EXIT;
+ If FileExists_Cached(Filename) = False then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Exit-4'); {$ENDIF}
+  FPiratedWindows := True; // yeah, we gonna assume pirated Windows in this case, too
+  EXIT;
+ End;
 
  x := RunBatchFileAndWait_GetCount();
  ShellExecuteDo('cmd.exe', '/C cscript /Nologo "' + Filename + '" /DLI > "' + TmpFile + '"');
 
+ // Wait for the modified script to run:
  for i := 1 to 8 do
  begin
   UI_Sleep(1000);
@@ -604,13 +828,24 @@ begin
  End;
 
  UI_Sleep(1000);
- Analyze_GenuineWindows_CheckFile(TmpFile);
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Final Check Start'); {$ENDIF}
+
+ If (FileExists_Cached(TmpFile) = False) or
+    (GetFileSize(TmpFile) < 10) then
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_GenuineWindows Exit-5'); {$ENDIF}
+  FPiratedWindows := True;
+ end else
+ begin
+  Analyze_GenuineWindows_CheckFile(TmpFile);
+ end;
+
 
  Try
-  DeleteFile(TmpFile);
- Except
-  ;
- End;
+  If FileExists_Cached(TmpFile) then DeleteFile(TmpFile);
+ except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Analyze_GenuineWindows Delete Exception: ' + E.Message); {$ENDIF}
+ end;
 
 end;
 
@@ -621,31 +856,40 @@ Var
  AllServicesOK : Boolean;
  tmpstr : String;
 begin
-
  {$IFDEF Debug_GenerateDebugLog} DebugLog('Button click: Analyze'); {$ENDIF}
 
- // Let's init these already:
- GetTempDir();
- GetDesktopDir();
 
- {$IFDEF Debug_ExceptionMessages}
- if (High(ServiceNamesArr) <> High(ServiceDescsArrX)) or
-    (FServiceCheckboxes.Count-1 <> High(ServiceDescsArrX)) or
+ Try
+   Detect64bitWindows();
+ except
+  {$IFDEF Debug_GenerateDebugLog}on E : Exception do DebugLog('Error: Detect64bitWindows Exception: ' + E.Message); {$ENDIF}
+ end;
+
+ {$IFDEF Debug_GenerateDebugLog}
+ if (High(ServiceNamesArr) <> High(ServiceDescsArr)) or
+    (FServiceCheckboxes.Count-1 <> High(ServiceDescsArr)) or
     (FServiceCheckboxes.Count <> FServiceLabels.Count) or
-    (FServiceCheckboxes.Count <> FServicePanels.Count) then ShowMessage('Internal Error: x1');
+    (FServiceCheckboxes.Count <> FServicePanels.Count) then DebugLog('Internal Error: control list count mismatch!');
  {$ENDIF}
 
  Try
    SetErrorMode(SEM_FAILCRITICALERRORS);
  except
-  {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('SEM_FAILCRITICALERRORS Exception: ' + E.Message); {$ENDIF}
+  {$IFDEF Debug_GenerateDebugLog}on E : Exception do DebugLog('Error: SEM_FAILCRITICALERRORS Exception: ' + E.Message); {$ENDIF}
  end;
 
+ if Analyze_CanWrite() = False then
+ begin
+  ShowMessage( _t('Error: Cannot write to {1}', 'UpdateFixer.cannot-write-x', FTempDir));
+  EXIT;
+ end;
 
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze Starting ...'); {$ENDIF}
+ FUI_AllowResizing   := False;
  btnAnalyze.Visible  := False;
  lblWorking.WordWrap := False;
  lblWorking.AutoSize := True;
- lblWorking.Caption := _t('Analyzing your computer. Please wait ...', 'UpdateFixer.working-analyze');
+ lblWorking.Caption  := _t('Analyzing your computer. Please wait ...', 'UpdateFixer.working-analyze');
 
  vlistAnalyze.Visible := False;
  lblFooter.Visible := False;
@@ -657,6 +901,7 @@ begin
  pnlWaiting.Visible := True;
  pnlWaiting.BringToFront;
 
+ FUI_WindowSizeSet := False; // Reset to False, to automatically set the window size for this view
  UI_UpdateDynamicContent();
 
 
@@ -709,10 +954,10 @@ begin
  UI_IncProgress();
 
  Try
-  if FileExists_Cached(FCmdResultFile) then DeleteFile(FCmdResultFile);
+  if FileExists_Cached(FWinGenCheckResultFile) then DeleteFile(FWinGenCheckResultFile);
  except
-  ;
- End;
+  {$IFDEF Debug_GenerateDebugLog}on E : Exception do DebugLog('Error: FCmdResultFile Delete Exception: ' + E.Message); {$ENDIF}
+ end;
 
 
  {$IFDEF Debug_GenerateDebugLog}
@@ -959,11 +1204,8 @@ begin
     'Do notice that Windows Update could be working even with these problems present in the system. If Windows Update is currently working, there is no need to use this program to fix anything.', 'UpdateFixer.errors-found');
 
  end;
- // FFreeSpaceOK       : Boolean;
- // FServicesOK        : Boolean;
- // FServiceOKArr      : Array[1 .. 6] of Boolean;
- // FRegistryOK        : Boolean;
- // FBlockersFound     : Boolean;
+
+
 
 
  UI_Setup_TabOrder();
@@ -974,8 +1216,10 @@ begin
  vlistAnalyze.Visible := False;
  vlistFix.Visible := True;
  pnlWaiting.Visible := False;
- UI_UpdateDynamicContent();
+ FUI_AllowResizing := True;
+ FUI_WindowSizeSet := False; // Reset to False, to automatically set the window size for this view
 
+ UI_UpdateDynamicContent();
 
 end;
 
@@ -1015,6 +1259,12 @@ begin
 end;
 
 procedure TMainForm.btnFixClick(Sender: TObject);
+
+ {$IFDEF Debug_GenerateDebugLog}
+ Var
+  i : integer;
+ {$ENDIF}
+
 begin
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := 'Starting... '; Application.ProcessMessages; {$ENDIF}
@@ -1039,7 +1289,8 @@ begin
    EXIT;
  end;
 
-
+ FUI_WindowSizeSet := False; // Reset to False, to automatically set the window size for this view
+ FUI_AllowResizing := False;
  lblWorking.WordWrap := False;
  lblWorking.AutoSize := True;
  lblWorking.Caption := _t('Fixing Windows Update, this can take up to five minutes. Please wait ...', 'UpdateFixer.working-fixing');
@@ -1070,7 +1321,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Init-1 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Init-1 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1083,7 +1333,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Init-2 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Init-2 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1096,7 +1345,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Init-3 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Init-3 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1109,7 +1357,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Init-4 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Init-4 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1130,7 +1377,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-1 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-1 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1147,7 +1393,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-2 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-2 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1165,7 +1410,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-3 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-3 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1184,7 +1428,6 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-4 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-4 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
@@ -1201,12 +1444,13 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-5 Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-5 Exception: ' + E.Message); {$ENDIF}
     End;
    end;
 
    Try
      {$IFDEF Debug_ShowProgress} lblHeader.Caption := 'Finalizing...'; Application.ProcessMessages; {$ENDIF}
+     {$IFDEF Debug_GenerateDebugLog} DebugLog('Fix Wait: Process_Finalize');{$ENDIF}
+     UI_Sleep(2000);
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Fix Start: Process_Finalize');{$ENDIF}
      Process_Finalize();
      UI_IncProgress(True);
@@ -1215,9 +1459,22 @@ begin
     on E : Exception do
     begin
      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Finalize Exception: ' + E.Message); {$ENDIF}
-     {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Finalize Exception: ' + E.Message); {$ENDIF}
     End;
    end;
+
+   {$IFDEF Debug_GenerateDebugLog}
+   if UI_AnyServiceCheckboxChecked() then
+   begin
+    UI_Sleep(2000);
+    DebugLog('Confirming whether services now seem okay ...');
+    For i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
+     if FServiceCheckboxes[i].Checked then
+     begin
+        If Analyze_System_Service_IsOK(ServiceNamesArr[i]) then DebugLog('Service ' + ServiceNamesArr[i] + ' seems OK')
+        else DebugLog('Error: Service ' + ServiceNamesArr[i] + ' seems not to be fixed!');
+       end;
+     end;
+ {$ENDIF}
 
  Finally
    vlistAnalyze.Visible := False;
@@ -1226,10 +1483,14 @@ begin
    lblFooter.Visible    := False;
    lblFooter2.Visible   := True;
    pnlWaiting.Visible   := False;
+   FUI_WindowSizeSet := False; // Reset to False, to automatically set the window size for this view
+   FUI_AllowResizing := False;
    UI_UpdateDynamicContent();
  End;
 
- {$IFDEF Debug_GenerateDebugLog} DebugLog('Fix Main Done');{$ENDIF}
+ {$IFDEF Debug_GenerateDebugLog}
+ DebugLog('Fix Main Done - Critical Errors: ' + IntToStr(FErrors));
+ {$ENDIF}
 
 end;
 
@@ -1356,25 +1617,51 @@ end;
 
 {$IFDEF Debug_GenerateDebugLog}
 Procedure TMainForm.DebugLog(const Str : String);
+var
+ bHighlight : Boolean;
 begin
+
+ if FDebugLog = nil then EXIT; // just in case
+
+
+ // Highlight specific log entries by adding an empty line before and after such log entry
+ if Str.StartsWith('*') or
+    FastPosExB('Exception', Str) or
+    FastPosExB('error', Str) or
+    FastPosExB('Click:', Str) then
+ begin
+  If FDebugLog[FDebugLog.Count-1] <> '' then FDebugLog.Add(''); // avoid double empty lines
+  bHighlight := True;
+
+  if FastPosExB('error', Str) or
+     FastPosExB('exception', Str) then Inc(FErrors);
+  
+ end else bHighlight := False;
 
  FDebugLog.Add('[' + IntToStr(GetTickCount) + ']: ' + Str);
 
- if Str.StartsWith('*') or
-    FastPosExB('Exception', Str) or
-    FastPosExB('Start:', Str) or
-    FastPosExB('Click:', Str) then FDebugLog.Add('');
+ if bHighlight then FDebugLog.Add('');
 
+
+ // Save upon every log write to ensure we catch the last thing added to the log
+ // in case the app crashes violently:
  Try
   If (FTempDir <> '') and
      (FDesktopDir <> '') then
   begin
-   if FDebugLogFile = '' then FDebugLogFile := 'upd_fixer_debug_' + IntToStr(GetTickCount)+ '.log';
+   if FDebugLogFile = '' then
+   begin
+    if DebugHook <> 0 then FDebugLogFile := 'upd_fixer_debug_dev.log'
+    else FDebugLogFile := 'upd_fixer_debug_' + IntToStr(GetTickCount)+ '.log';
+   end;
+
    FDebugLog.SaveToFile(FDesktopDir + FDebugLogFile, TEncoding.UTF8);
   end;
  Except
-  ;
+  ; // writing to disk can always fail. Nothing we can do about that.
  End;
+
+ Application.ProcessMessages;
 
 end;
 {$ENDIF}
@@ -1393,13 +1680,16 @@ begin
  Self.BorderStyle := bsNone;
  Self.KeyPreview := True;
  Self.DoubleBuffered := True;
+ Self.StyleElements := [];
+
  FLastTmrShowRun := GetTickCount64();
  FLastTmrStarted := FLastTmrShowRun;
  tmrShow.Enabled := False;
  tmrUpdateUiSelections.Enabled := False;
- FUISelUpdLock := False;
+ FUISelUpdLock  := False;
+ FUIGenUpdLock  := False;
  FPriviledgeSet := False;
-
+ FUI_WindowSizeSet := False;
 
  if CreateMutexDo('updatefixer', False) = False then
  begin
@@ -1422,19 +1712,49 @@ begin
  FRegIniFilename    := '';
  FTempDir           := '';
  FDesktopDir        := '';
- FDebugLogFile      := '';
  FUI_AutoPos        := True;
- FCmdResultFile     := '';
+ FUI_AllowResizing  := False;
+ FWinGenCheckResultFile     := '';
 
- FMIN_APP_HEIGHT    := 400;
- FMIN_APP_WIDTH     := 400;
- FMAX_APP_WIDTH     := Min(1000, Round(MainForm.Monitor.Width * 0.8));
+
+ // Let's make the app window border width a bit wider in large resolutions,
+ // because otherwise it might be difficult to grab the edge for window resize
+ FUI_BORDER_WIDTH := 2;
+ if MainForm.Monitor.Width > 2000 then FUI_BORDER_WIDTH := FUI_BORDER_WIDTH+2;
+
+
+ {$IFDEF Debug_GenerateDebugLog}
+ FDebugLogFile := '';
+ FErrors := 0;
 
  FDebugLog := TStringList.Create;
  FDebugLog.Add('Init');
+ FDebugLog.Add('');
+ FDebugLog.Add('APP_VERSION: ' + APP_VERSION);
+ FDebugLog.Add('CmdLine: ' + CmdLine);
+ FDebugLog.Add('');
+ FDebugLog.Add('Today is: ' + FormatDateTime('DD.MM.YYYY', Now));
+ FDebugLog.Add('Screen: ' + IntToStr(Screen.Width) + 'x' + IntToStr(Screen.Height));
+ FDebugLog.Add('Monitor: ' + IntToStr(MainForm.Monitor.Width) + 'x' + IntToStr(MainForm.Monitor.Height));
+ FDebugLog.Add('PPI: ' + IntToStr(MainForm.Monitor.PixelsPerInch));
+ FDebugLog.Add('');
+ FDebugLog.Add('FUI_BORDER_WIDTH: ' + IntToStr(FUI_BORDER_WIDTH));
+ FDebugLog.Add('DEBUG_STORE_BAT: '    + IntToStr(DEBUG_STORE_BAT));
+ FDebugLog.Add('DEBUG_PIRATED: '      + IntToStr(DEBUG_PIRATED));
+ FDebugLog.Add('DEBUG_NO_ISSUES: '    + IntToStr(DEBUG_NO_ISSUES));
+ FDebugLog.Add('DEBUG_SOME_ISSUES: '  + IntToStr(DEBUG_SOME_ISSUES));
+ FDebugLog.Add('DEBUG_NO_BATCH: '     + IntToStr(DEBUG_NO_BATCH));
+ FDebugLog.Add('DEBUG_SHOW_WINVER: '  + IntToStr(DEBUG_SHOW_WINVER));
+ FDebugLog.Add('');
+ FDebugLog.Add('TempDir: ' + GetTempDir());
+ FDebugLog.Add('DesktopDir: ' + GetDesktopDir());
+ FDebugLog.Add('');
+ {$ENDIF}
 
  vlistHolder.Visible := False;
+ pnlMainParent.AlignWithMargins := True;
  pnlMainParent.Align := alClient;
+ pnlWindowTitle.AlignWithMargins := False;
 
  vlistAnalyze.Parent := pnlMainParent;
  vlistFix.Parent     := pnlMainParent;
@@ -1535,9 +1855,9 @@ begin
 
  Try
   Result := (FileGetAttr(FileName) and Attr) > 0;
- Except
-  ;
- End;
+ except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: HasAttrib Exception: ' + E.Message); {$ENDIF}
+ end;
 
 end;
 
@@ -1576,6 +1896,12 @@ procedure TMainForm.tmrUpdateUiSelectionsTimer(Sender: TObject);
 begin
  tmrUpdateUiSelections.Enabled := False;
  UI_UpdateSelectionCounts_DO();
+end;
+
+procedure TMainForm.tmrUpdateUITimer(Sender: TObject);
+begin
+ tmrUpdateUI.Enabled := False;
+ UI_UpdateDynamicContent();
 end;
 
 Procedure TMainForm.UI_UpdateSelectionCounts();
@@ -1632,22 +1958,62 @@ begin
  End;
 end;
 
-Procedure TMainForm.UI_UpdateDynamicContent();
+
+Procedure TMainForm.UI_SetWindowSize();
 Var
- i    : Integer;
  iVal : Integer;
 begin
 
- {$IFDEF Debug_Colors}
- MainForm.Color := clRed;
- pnlMainParent.Color := clPurple;
- vlistRecommended.Color := clGreen;
- vlistOptional.Color := clBlue;
- vlistAnalyze.Color := clBlue;
- vlistFix.Color := clGray;
- {$ENDIF}
+ // We will automatically set the window size only once per view
+ if FUI_WindowSizeSet then EXIT;
+ FUI_WindowSizeSet := True;
 
- UI_UpdateSelectionCounts();
+
+ if MainForm.Monitor.Height > 1000 then
+ begin
+  FUI_MIN_HEIGHT := 500;
+  FUI_MIN_WIDTH  := 500;
+ end else
+ begin
+  FUI_MIN_HEIGHT := 400;
+  FUI_MIN_WIDTH  := 400;
+ end;
+
+ // The analysis results view needs more room to display everything,
+ // hence:
+ if vlistFix.Visible then
+ begin
+   if MainForm.Monitor.Height > 800 then
+   begin
+    iVal := Round(MainForm.Monitor.Height * 0.2);
+    if iVal > 500 then iVal := 500;
+    FUI_MIN_HEIGHT := FUI_MIN_HEIGHT + iVal;
+   end;
+
+   if MainForm.Monitor.Width > 800 then
+   begin
+    iVal := Round(MainForm.Monitor.Width * 0.2);
+    if iVal > 500 then iVal := 500;
+    FUI_MIN_WIDTH := FUI_MIN_WIDTH + iVal;
+   end;
+
+   if (MainForm.Monitor.Height > 1000) and (FUI_MIN_HEIGHT < 1000) then FUI_MIN_HEIGHT := 1000;
+ end;
+
+ FUI_MAX_WIDTH  := Min(1000, Round(MainForm.Monitor.Width * 0.8));
+ FUI_MAX_HEIGHT := Min(1000, Round(MainForm.Monitor.Height * 0.8));
+
+ if FUI_MIN_WIDTH  > FUI_MAX_WIDTH then FUI_MIN_WIDTH   := FUI_MAX_WIDTH-100;
+ if FUI_MIN_HEIGHT > FUI_MAX_HEIGHT then FUI_MIN_HEIGHT := FUI_MAX_HEIGHT-100;
+
+ MainForm.Constraints.MinWidth  := FUI_MIN_WIDTH;
+ MainForm.Constraints.MinHeight := FUI_MIN_HEIGHT;
+ MainForm.Constraints.MaxWidth  := FUI_MAX_WIDTH;
+ MainForm.Constraints.MaxHeight := FUI_MAX_HEIGHT;
+
+
+
+ // Set the window width first:
 
  if MainForm.Monitor.Width > 2000 then iVal := 1000
  else if MainForm.Monitor.Width > 1000 then iVal := 900
@@ -1655,6 +2021,8 @@ begin
  else if MainForm.Monitor.Width > 700 then iVal := 700
  else iVal := 600;
 
+ // The analysis results view needs more room to display everything,
+ // hence:
  if vlistDone.Visible or
     pnlWaiting.Visible or
     vlistAnalyze.Visible then
@@ -1663,15 +2031,12 @@ begin
   if iVal < 600 then iVal := 600;
  End;
 
- if iVal < FMIN_APP_WIDTH then iVal := FMIN_APP_WIDTH;
- if iVal > FMAX_APP_WIDTH then iVal := FMAX_APP_WIDTH;
+ if iVal < FUI_MIN_WIDTH then iVal := FUI_MIN_WIDTH;
+ if iVal > FUI_MAX_WIDTH then iVal := FUI_MAX_WIDTH;
  MainForm.Width := iVal;
 
 
-
- if pnlNothing.Visible then ScrollBox1.Visible := False
- else ScrollBox1.Visible := True;
-
+ // Then, set the default sizes of the scroll boxes (i.e. analyzis result checkboxes and labels)
  if MainForm.Monitor.Height > 2500 then iVal := 400
  else if MainForm.Monitor.Height > 2000 then iVal := 350
  else if MainForm.Monitor.Height > 1800 then iVal := 300
@@ -1684,69 +2049,33 @@ begin
  ScrollBox1.Height := iVal;
  ScrollBox2.Height := iVal;
 
- // save some space:
- if (MainForm.Monitor.Height < 2000) and
-    (vlistFix.Visible) and
-    (ScrollBox1.Visible) and
-    (ScrollBox2.Visible) then
- begin
-  lblFooter.Visible  := False;
-  lblFooter2.Visible := False;
- end;
 
-
-
- lblHeader.AutoSize := True;
- lblHeader.WordWrap := False;
- lblHeader.Top  := pnlWindowTitle.Height div 2 - lblHeader.Height div 2;
- lblHeader.Left := MainForm.Width div 2 - lblHeader.Width div 2;
-
- SetLabelHeight(lblCaptRecommended);
- SetLabelHeight(lblCaptOptional);
- SetLabelHeight(lblCaptMain);
-
- SetLabelHeight(lblAnalyze, 300);
- SetLabelHeight(lblBackup);
- SetLabelHeight(lblThanks);
- SetLabelHeight(lblDone);
- SetLabelHeight(lblDone2);
-
- SetLabelHeight(lblFixInfo);
- SetLabelHeight(lblFooter);
- SetLabelHeight(lblFooter2);
-
- SetLabelHeight(lblTempFiles, 30);
- SetLabelHeight(lblDeliveryFiles, 30);
- SetLabelHeight(lblBlockers, 30);
- SetLabelHeight(lblRegistry, 30);
- For i := 0 to FServiceLabels.Count-1 do SetLabelHeight(FServiceLabels[i], 30);
- SetLabelHeight(lblHostsFile, 30);
-
+ // And lastly, the window height:
 
  If vlistAnalyze.Visible then
  begin
-  vlistAnalyze.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
-  vlistAnalyze.AdjustControls(True);
-  iVal := vlistAnalyze.Height;
+    vlistAnalyze.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
+    vlistAnalyze.AdjustControls(True);
+    iVal := vlistAnalyze.Height;
 
  end else
  If vlistFix.Visible then
  begin
-  vlistRecommendedSub.AdjustControls(True);
-  vlistOptionalSub.AdjustControls(True);
-  vlistOptional.AdjustControls(True);
-  vlistRecommended.AdjustControls(True);
+    vlistRecommendedSub.AdjustControls(True);
+    vlistOptionalSub.AdjustControls(True);
+    vlistOptional.AdjustControls(True);
+    vlistRecommended.AdjustControls(True);
 
-  vlistFix.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
-  vlistFix.AdjustControls(True);
-  iVal := vlistFix.Height;
+    vlistFix.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
+    vlistFix.AdjustControls(True);
+    iVal := vlistFix.Height;
 
  end else
  if vlistDone.Visible then
  begin
-  vlistDone.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
-  vlistDone.AdjustControls(True);
-  iVal := vlistDone.Height;
+    vlistDone.Top := pnlWindowTitle.Top + pnlWindowTitle.Height; // ensure window controls remain at the top
+    vlistDone.AdjustControls(True);
+    iVal := vlistDone.Height;
  End;
 
  iVal := iVal + pnlMainParent.Margins.Top + pnlMainParent.Margins.Bottom;
@@ -1756,39 +2085,138 @@ begin
  iVal := iVal + 10;
  if MainForm.Monitor.Height > 1800 then iVal := iVal + 50;
 
-
- if iVal < FMIN_APP_HEIGHT then iVal := FMIN_APP_HEIGHT;
+ if iVal < FUI_MIN_HEIGHT then iVal := FUI_MIN_HEIGHT;
  MainForm.Height := iVal;
 
+ {$IFDEF Debug_GenerateDebugLog}
+ DebugLog('FUI_MIN_WIDTH: '    + IntToStr(FUI_MIN_WIDTH));
+ DebugLog('FUI_MIN_HEIGHT: '   + IntToStr(FUI_MIN_HEIGHT));
+ DebugLog('FUI_MAX_WIDTH: '    + IntToStr(FUI_MAX_WIDTH));
+ DebugLog('New MainForm.Width: '  + IntToStr(MainForm.Width));
+ DebugLog('New MainForm.Height: ' + IntToStr(MainForm.Height));
+ {$ENDIF}
 
- if FUI_AutoPos then
- begin
-  MainForm.Left := MainForm.Monitor.Width  div 2 - MainForm.Width  div 2;
-  MainForm.Top  := MainForm.Monitor.Height div 2 - MainForm.Height div 2;
- end;
 
- if pnlWaiting.Visible then
- begin
-  ProgressBar.Width := MainForm.Width div 2;
-  ProgressBar.Left := pnlWaiting.Width div 2 - ProgressBar.Width div 2;
 
- if imgSpinner_DM_128.Visible then
- begin
-  imgSpinner_DM_128.Left := pnlWaiting.Width  div 2 - imgSpinner_DM_128.Width div 2;
-  imgSpinner_DM_128.Top  := pnlWaiting.Height div 2 - imgSpinner_DM_128.Height div 2 - pnlWindowTitle.Height - 10;
-  ProgressBar.Top        := imgSpinner_DM_128.Top + imgSpinner_DM_128.Height + 30;
- end else
- if imgSpinner_NM_128.Visible then
- begin
-  imgSpinner_NM_128.Left := pnlWaiting.Width  div 2 - imgSpinner_NM_128.Width div 2;
-  imgSpinner_NM_128.Top  := pnlWaiting.Height div 2 - imgSpinner_NM_128.Height div 2 - pnlWindowTitle.Height - 10;
-  ProgressBar.Top        := imgSpinner_NM_128.Top + imgSpinner_NM_128.Height + 30;
- end;
+end;
 
-  lblWorking.Left := pnlWaiting.Width div 2 - lblWorking.Width div 2;
-  lblWorking.Top  := ProgressBar.Top + ProgressBar.Height + 30;
- end;
+Procedure TMainForm.UI_UpdateDynamicContent();
+Var
+ i    : Integer;
+ iVal : Integer;
+begin
 
+ if FUIGenUpdLock then EXIT;
+ FUIGenUpdLock := True;
+
+ Try
+
+   {$IFDEF Debug_Colors}
+   MainForm.Color := clRed;
+   pnlMainParent.Color := clPurple;
+   vlistRecommended.Color := clGreen;
+   vlistOptional.Color := clBlue;
+   vlistAnalyze.Color := clBlue;
+   vlistFix.Color := clGray;
+   {$ENDIF}
+
+   UI_UpdateSelectionCounts();
+
+
+
+   if pnlNothing.Visible then ScrollBox1.Visible := False
+   else ScrollBox1.Visible := True;
+
+
+
+   // save some space:
+   if (MainForm.Monitor.Height < 2000) and
+      (vlistFix.Visible) and
+      (ScrollBox1.Visible) and
+      (ScrollBox2.Visible) then
+   begin
+    lblFooter.Visible  := False;
+    lblFooter2.Visible := False;
+   end;
+
+
+
+   lblHeader.AutoSize := True;
+   lblHeader.WordWrap := False;
+   lblHeader.Top  := pnlWindowTitle.Height div 2 - lblHeader.Height div 2;
+   lblHeader.Left := MainForm.Width div 2 - lblHeader.Width div 2;
+
+   SetLabelHeight(lblCaptRecommended);
+   SetLabelHeight(lblCaptOptional);
+   SetLabelHeight(lblCaptMain);
+
+   SetLabelHeight(lblAnalyze, 300);
+   SetLabelHeight(lblBackup);
+   SetLabelHeight(lblThanks);
+   SetLabelHeight(lblDone);
+   SetLabelHeight(lblDone2);
+
+   SetLabelHeight(lblFixInfo);
+   SetLabelHeight(lblFooter);
+   SetLabelHeight(lblFooter2);
+
+   SetLabelHeight(lblTempFiles, 10);
+   SetLabelHeight(lblDeliveryFiles, 10);
+   SetLabelHeight(lblBlockers, 10);
+   SetLabelHeight(lblRegistry, 10);
+   For i := 0 to FServiceLabels.Count-1 do SetLabelHeight(FServiceLabels[i], 10);
+   SetLabelHeight(lblHostsFile, 10);
+
+
+
+   UI_SetWindowSize();
+
+
+   // If the window size could have been set manually via resize,
+   // take that into account by adjusting the height of the scroll
+   // boxes that display the analysis results (i.e. checkboxes and labels)
+   if FUI_AllowResizing and vlistFix.Visible then
+   begin
+     iVal := MainForm.Height - vlistFix.Height - pnlWindowTitle.Height - lblFooter2.Height;
+     if ScrollBox1.Visible and ScrollBox2.Visible then iVal := iVal div 2;
+
+     ScrollBox1.Height := ScrollBox1.Height + iVal;
+     ScrollBox2.Height := ScrollBox2.Height + iVal;
+     vlistFix.AdjustControls(True);
+   end;
+
+
+   if FUI_AutoPos then
+   begin
+    MainForm.Left := MainForm.Monitor.Width  div 2 - MainForm.Width  div 2;
+    MainForm.Top  := MainForm.Monitor.Height div 2 - MainForm.Height div 2;
+   end;
+
+   if pnlWaiting.Visible then
+   begin
+    ProgressBar.Width := MainForm.Width div 2;
+    ProgressBar.Left := pnlWaiting.Width div 2 - ProgressBar.Width div 2;
+
+   if imgSpinner_DM_128.Visible then
+   begin
+    imgSpinner_DM_128.Left := pnlWaiting.Width  div 2 - imgSpinner_DM_128.Width div 2;
+    imgSpinner_DM_128.Top  := pnlWaiting.Height div 2 - imgSpinner_DM_128.Height div 2 - pnlWindowTitle.Height - 10;
+    ProgressBar.Top        := imgSpinner_DM_128.Top + imgSpinner_DM_128.Height + 30;
+   end else
+   if imgSpinner_NM_128.Visible then
+   begin
+    imgSpinner_NM_128.Left := pnlWaiting.Width  div 2 - imgSpinner_NM_128.Width div 2;
+    imgSpinner_NM_128.Top  := pnlWaiting.Height div 2 - imgSpinner_NM_128.Height div 2 - pnlWindowTitle.Height - 10;
+    ProgressBar.Top        := imgSpinner_NM_128.Top + imgSpinner_NM_128.Height + 30;
+   end;
+
+    lblWorking.Left := pnlWaiting.Width div 2 - lblWorking.Width div 2;
+    lblWorking.Top  := ProgressBar.Top + ProgressBar.Height + 30;
+   end;
+
+ Finally
+  FUIGenUpdLock := False;
+ End;
 end;
 
 procedure TMainForm.FormKeyDown(Sender: TObject; var Key: Word;
@@ -1908,7 +2336,7 @@ Begin
    Lbl.WordWrap := True;
    Lbl.Height := iRes;
  except
-  {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('SetLabelHeight Exception: ' + E.Message); {$ENDIF}
+  {$IFDEF Debug_GenerateDebugLog}on E : Exception do DebugLog('Error: SetLabelHeight Exception: ' + E.Message); {$ENDIF}
  end;
 
 End;
@@ -2019,7 +2447,7 @@ begin
    FDebugDir := ExpandEnvVariable('%USERPROFILE%') + '\Desktop\';
 
  except
-  {$IFDEF Debug_ExceptionMessages}on E : Exception do ShowMessage('Init_AppDirs Exception: ' + E.Message); {$ENDIF}
+  {$IFDEF Debug_GenerateDebugLog}on E : Exception do DebugLog('Error: Init_AppDirs Exception: ' + E.Message); {$ENDIF}
  end;
 
  // If DEBUG_PT_DETECT_MESSAGES then ShowMessage('Init_AppDirs AppDir: ' + FAppDir + #13#10 + 'PTDir: ' + FPTAppDir);
@@ -2229,7 +2657,6 @@ begin
   Color_MainBack  := RGB(0, 0, 0);
   Color_NavBack   := RGB(31, 31, 31); // This is the color from Windows 10 Dark Mode
   Color_MainFont  := RGB(250,250,250);
-  pnlMainParent.BorderColor := Color_NavBack;
 
   Color_Btn_WhiteBack  := RGB(51,51,51);
   Color_Btn_ClickColor := RGB(226,226,226);
@@ -2249,6 +2676,15 @@ begin
   btnWinClose.SymbolFocusColor := RGB(255, 255, 255);
  end;
 
+ // To allow resizing, we will show a bit of the form, and use that to form the
+ // border around the app window, instead of pnlMainParent.Border property
+ pnlMainParent.BorderWidth    := 0;
+ pnlMainParent.Margins.Top    := FUI_BORDER_WIDTH;
+ pnlMainParent.Margins.Bottom := FUI_BORDER_WIDTH;
+ pnlMainParent.Margins.Left   := FUI_BORDER_WIDTH;
+ pnlMainParent.Margins.Right  := FUI_BORDER_WIDTH;
+ MainForm.Color := Color_NavBack;
+
  if FUI_DarkMode then
  begin
   imgSpinner_DM_128.Parent := pnlWaiting;
@@ -2267,8 +2703,7 @@ begin
 
 
 
- Self.Color           := Color_MainBack;
- Self.Font.Color      := Color_MainFont;
+ MainForm.Font.Color := Color_MainFont;
 
  pnlMainParent.ParentColor      := False;
  pnlMainParent.ParentBackground := False;
@@ -2311,21 +2746,18 @@ End;
 procedure TMainForm.FormResize(Sender: TObject);
 begin
 
+ if (FCheckboxes = nil) or (MainForm.Visible = False) then EXIT;
+
+
  lblHeader.Top  := pnlWindowTitle.Height div 2 - lblHeader.Height div 2;
  lblHeader.Left := MainForm.Width  div 2 - lblHeader.Width div 2;
+ UI_UpdateDynamicContent();
 
 end;
 
 procedure TMainForm.FormShow(Sender: TObject);
 begin
  tmrShow.Enabled := True;
-
- Try
-   SetErrorMode(SEM_FAILCRITICALERRORS);
- except
-  ;
- end;
-
 end;
 
 procedure TMainForm.imgLogoSmallClick(Sender: TObject);
@@ -2399,7 +2831,7 @@ begin
  FPriviledgeSet := True;
 
  {$IFDEF Debug_GenerateDebugLog}
-   DebugLog('SetPrivilege: ' + privilegeName);
+   DebugLog('SetPrivilege Start: ' + privilegeName);
  {$ENDIF}
 
  result := False;
@@ -2417,228 +2849,221 @@ begin
 
      dwRetLen := 0;
      result := AdjustTokenPrivileges(token, False, tp, SizeOf(tpPrev), tpPrev, dwRetLen);
+
+     {$IFDEF Debug_GenerateDebugLog}
+       If result then DebugLog('SetPrivilege OK!')
+       else DebugLog('Error: SetPrivilege Failed!')
+     {$ENDIF}
    end;
 
    CloseHandle(token);
  except
-  ;
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: SetPrivilege Exception: ' + E.Message); {$ENDIF}
  end;
-
 end;
 
-function TMainForm.MyGetComputerName(): String;
-var
-  buffer    : PChar;
-  bufferSize: DWORD;
-begin
-  bufferSize := MAX_COMPUTERNAME_LENGTH+1;
-  GetMem(buffer, bufferSize);
-  try
-    GetComputerName(buffer, bufferSize);
-    Result := Trim(buffer);
-  finally
-    FreeMem(buffer, bufferSize);
-  end;
-
-
-
- {$IFDEF Debug_GenerateDebugLog}
-   DebugLog('MyGetComputerName: ' + Result);
- {$ENDIF}
-
-end;
-
-function TMainForm.MyGetUserName(): String;
-var
-  buffer    : PChar;
-  bufferSize: DWORD;
-begin
-  bufferSize := 128;
-  buffer := AllocMem(bufferSize);
-  try
-    GetUserName(buffer, bufferSize);
-    Result :=  Trim(buffer);
-  finally
-    FreeMem(buffer, bufferSize);
-  end;
-
-
- {$IFDEF Debug_GenerateDebugLog}
-   DebugLog('MyGetUserName: ' + Result);
- {$ENDIF}
-
-end;
-
-function TMainForm.SID_GetUserSID() : Pointer;
-var
- PSID: Pointer;
- SIDSize, DomainSize, peUse: Cardinal;
- Machine,AccountName: PChar;
- Domain: String;
- Success: Boolean;
-begin
-
-  result := nil;
-  Machine:= PChar(MyGetComputerName);
-  AccountName:= PChar(MyGetUserName);
-  SIDSize := 0;
-  DomainSize := 0;
-  Success:= LookupAccountNameW(Machine,AccountName,nil,SIDSize,nil, DomainSize,peUse);
-  if (not Success) and (GetLastError = ERROR_INSUFFICIENT_BUFFER) then
-  begin
-      GetMem(PSID,SIDSize);
-      SetLength(Domain, DomainSize);
-      try
-        if not LookupAccountNameW(Machine, AccountName,PSID,
-          SIDSize, PChar(Domain),DomainSize,peUse) then
-        begin
-          if psid <> nil  then
-          begin
-            exit;
-          end
-          else
-            result := PSID;
-        end
-        else
-          result := PSID;
-      finally
-      //  FreeMem(Domain);
-        //FreeMem(PSID);
-      end;
-  end
-//  else
-//    RaiseLastOSError;
-end;
 
 Procedure TMainForm.Process_Init_Pas();
-var
-  i : Integer;
-  SID: PSID;
-  peUse, cchDomain, cchName, dwResult : DWORD;
-  Name, Domain: array of Char;
-  pDACL: PACL;
-  pEA: PEXPLICIT_ACCESS_W;
-  sObject: String;
-  Sd: PSecurityDescriptor;
-  UserSID: Pointer;
-  ServName : String;
-  UsrID : String;
+Var
+ i : Integer;
+ x : Integer;
 begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Init_Pas Start'); {$ENDIF}
 
-  // 'SeTakeOwnershipPrivilege'
-  SetPrivilege('SeTakeOwnershipPrivilege', true);
-  //SetPrivilege(_x('!WW5YbGVqX2Z8dmZmfn5oSWhyanRyekdE'), true);
-
-  UsrID := 'S-1-5-32-545'; // Note: S-1-5-32-545='users';  S-1-1-0='everyone'
 
   for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
   begin
-    if FServiceCheckboxes[i].Checked = False then Continue;
-
-    ServName := ServiceNamesArr[i];
-    if Analyze_System_Service_IsOK(ServName) = False then
+    if FServiceCheckboxes[i].Checked = False then
     begin
-     If IsByDefaultReadOnlyServKey(ServName) then Continue;
-    end else Continue;
+     {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Init_Pas SKIP: ' + ServiceNamesArr[i]); {$ENDIF}
+     Continue;
+    end;
 
-
-    SID := nil;
-    ConvertStringSidToSid(PChar(UsrID), SID);
-    if SID = nil then Break;
-
-    sObject := 'MACHINE\SYSTEM\CurrentControlSet\Services\' + ServName;
+    {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Init_Pas Do Start: ' + ServiceNamesArr[i]); {$ENDIF}
+    x := Process_Init_Pas_DO(ServiceNamesArr[i]);
 
     {$IFDEF Debug_GenerateDebugLog}
-      DebugLog('Process_Init_Pas: ' + sObject);
+    if x < 1 then DebugLog('Error: Process_Init_Pas_DO Result: ' + IntToStr(x))
+    else DebugLog('Process_Init_Pas_DO Result: ' + IntToStr(x));
     {$ENDIF}
+  end;
 
-    cchName := 0;
-    cchDomain := 0;
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Init_Pas Done'); {$ENDIF}
 
-    Try
-      if LookupAccountSidW(nil, SID, nil, cchName, nil, cchDomain, peUse) then
-      begin
+end;
+
+
+
+Function TMainForm.Process_Init_Pas_DO(const ServName : String) : Integer;
+
+type P_TOKEN_USER = ^TOKEN_USER;
+
+var
+  i : Integer;
+  SID: PSID;
+  peUse, cchDomain, cchName : DWORD;
+  dwResult : DWORD;
+  Name, Domain: array of Char;
+  pDACL: PACL;
+  EA: EXPLICIT_ACCESS;
+  sObject: String;
+  SecDesc : TSecurityDescriptor;
+  TokenHandle: THandle;
+  pTokenUser: P_TOKEN_USER;
+  ccTokenInfo: DWORD;
+  UsrID : String;
+begin
+
+
+  // Note: S-1-5-32-545 = 'users'
+  // Ref: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers
+  UsrID := 'S-1-5-32-545';
+  Result := -1;
+
+
+  if Analyze_System_Service_IsOK(ServName) then EXIT(1) // service seems already fine
+  else
+  begin
+   If IsByDefaultReadOnlyServKey(ServName) then EXIT(-2);
+  end;
+
+
+  SetPrivilege('SeTakeOwnershipPrivilege', true);
+
+  SID := nil;
+  ConvertStringSidToSid(PChar(UsrID), SID);
+  if SID = nil then EXIT(-3);
+
+  sObject := 'MACHINE\SYSTEM\CurrentControlSet\Services\' + ServName;
+
+  {$IFDEF Debug_GenerateDebugLog}
+    DebugLog('Process_Init_Pas_DO Start: ' + sObject);
+  {$ENDIF}
+
+  cchName := 0;
+  cchDomain := 0;
+
+  Try
+   if (not LookupAccountSid(nil, SID, nil, cchName, nil, cchDomain, peUse)) and
+      (GetLastError = ERROR_INSUFFICIENT_BUFFER) then
+   begin
 
        {$IFDEF Debug_GenerateDebugLog}
-         DebugLog('Process_Init_Pas LookupAccountSidW-1 Done: ' + IntToStr(cchName) + ' | ' + IntToStr(cchDomain));
+         if (cchName < 1) or (cchDomain < 1) then
+              DebugLog('Error: Process_Init_Pas LookupAccountSidW-1 failed: ' + IntToStr(cchName) + ' | ' + IntToStr(cchDomain))
+         else DebugLog('Process_Init_Pas LookupAccountSidW-1 Done: ' + IntToStr(cchName) + ' | ' + IntToStr(cchDomain));
        {$ENDIF}
 
-        if cchName < 1 then Continue;
-        if cchDomain < 1 then Continue;
+        if cchName < 1 then EXIT(-3);
+        if cchDomain < 1 then EXIT(-4);
 
         SetLength(Name, cchName);
         SetLength(Domain, cchDomain);
 
-        if LookupAccountSidW(nil, SID, @Name[0], cchName, @Domain[0], cchDomain, peUse) then
+        if LookupAccountSid(nil, SID, @Name[0], cchName, @Domain[0], cchDomain, peUse) then
         begin
-          pEA := AllocMem(SizeOf(EXPLICIT_ACCESS));
-          BuildExplicitAccessWithNameW(@pEA, PChar(Name), GENERIC_ALL,GRANT_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT);
-
-          dwResult := SetEntriesInAclW(1, @pEA, nil, pDACL);
 
           {$IFDEF Debug_GenerateDebugLog}
-            DebugLog('SetEntriesInAclW dwResult: ' + IntToStr(dwResult));
+           DebugLog('Process_Init_Pas LookupAccountSid-2 Done: ' + ArrayToString(Name) + ' | ' + ArrayToString(Domain));
           {$ENDIF}
 
-          if dwResult = ERROR_SUCCESS then
+
+          ZeroMemory(@EA, SizeOf(EA));
+          BuildExplicitAccessWithName(@EA, PChar(Name), GENERIC_ALL, GRANT_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+
+          {$IFDEF Debug_GenerateDebugLog}
+           DebugLog('BuildExplicitAccessWithName Done');
+          {$ENDIF}
+
+          dwResult := SetEntriesInAcl(1, @EA, nil, pDACL);
+
+          {$IFDEF Debug_GenerateDebugLog}
+            DebugLog('SetEntriesInAcl dwResult: ' + IntToStr(dwResult));
+          {$ENDIF}
+
+          InitializeSecurityDescriptor(@SecDesc, SECURITY_DESCRIPTOR_REVISION);
+
+          OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY or
+            TOKEN_IMPERSONATE or TOKEN_DUPLICATE, TokenHandle);
+
+          if TokenHandle <> 0 then
           begin
-                if sid <> nil then
+            {$IFDEF Debug_GenerateDebugLog} DebugLog('OpenProcessToken OK'); {$ENDIF}
+
+            GetTokenInformation(TokenHandle, TokenUser, nil, 0, ccTokenInfo);
+            // the call should fail with ERROR_INSUFFICIENT_BUFFER
+            if (GetLastError() = ERROR_INSUFFICIENT_BUFFER) then
+            begin
+              // Allocate memory via HeapAlloc
+              pTokenUser :=  HeapAlloc(GetProcessHeap(), 0, ccTokenInfo);
+              if (pTokenUser <> nil) then
+              begin
+
+                // Retrieve the user information from the token.
+                if (GetTokenInformation(TokenHandle, TokenUser, pTokenUser, ccTokenInfo, ccTokenInfo)) and
+                   (pTokenUser <> nil) then
                 begin
-                  GetMem(Sd, 1024);
-                  //Sd := AllocMem(1024);
-                  InitializeSecurityDescriptor(Sd, SECURITY_DESCRIPTOR_REVISION);
+                  // set registry key owner
+                  dwResult := SetNamedSecurityInfo(PChar(sObject), SE_REGISTRY_KEY,
+                                    OWNER_SECURITY_INFORMATION, pTokenUser^.User.Sid, nil, nil, nil);
+                  if dwResult <> ERROR_SUCCESS then Result := -5;
 
-                  //SetSecurityDescriptorOwnerSd,UserSID, False);
-                  UserSID := SID_GetUserSID();
-                  dwResult := SetNamedSecurityInfoW(PChar(sObject), SE_REGISTRY_KEY,
-                              OWNER_SECURITY_INFORMATION, UserSID, nil, nil, nil);
-
-                  {$IFDEF Debug_GenerateDebugLog}
-                    DebugLog('SetNamedSecurityInfoW1 dwResult: ' + IntToStr(dwResult));
-                  {$ENDIF}
-
-                  {
-                  if dwResult = ERROR_SUCCESS then ShowMessage('SetNamedSecurityInfo x1 success!')
+                 {$IFDEF Debug_GenerateDebugLog}
+                  if dwResult = ERROR_SUCCESS then
+                     DebugLog('SetNamedSecurityInfo1 dwResult: ' + IntToStr(dwResult))
                   else
-                  if (dwResult <> ERROR_SUCCESS) and (dwResult <> ERROR_INVALID_PARAMETER) then
-                     ShowMessage('SetNamedSecurityInfo Take Ownership failed: ' + SysErrorMessage(GetLastError));
-                             }
-                  FreeMem(Sd);
-                end;
+                     DebugLog('Error: SetNamedSecurityInfo1 failed with message: ' + SysErrorMessage(dwResult));
+                 {$ENDIF}
+               end;
+
+               if (pTokenUser <> nil) then
+               begin
+                {$IFDEF Debug_GenerateDebugLog} DebugLog('HeapFree Start'); {$ENDIF}
+                HeapFree(GetProcessHeap(), 0, pTokenUser);
+                {$IFDEF Debug_GenerateDebugLog} DebugLog('HeapFree Done'); {$ENDIF}
+               end;
+
+              end else begin {$IFDEF Debug_GenerateDebugLog} DebugLog('HeapAlloc Failed'); {$ENDIF} end;
+            end else begin {$IFDEF Debug_GenerateDebugLog} DebugLog('GetTokenInformation Failed'); {$ENDIF} end;
+          end else begin {$IFDEF Debug_GenerateDebugLog} DebugLog('OpenProcessToken Failed'); {$ENDIF} end;
 
 
-            dwResult := SetNamedSecurityInfoW(PChar(sObject), SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION, nil, nil, pDACL, nil);
+          // Set registry key permissions (pDACL)
+          dwResult := SetNamedSecurityInfo(PChar(sObject), SE_REGISTRY_KEY,
+            DACL_SECURITY_INFORMATION, nil, nil, pDACL, nil);
 
-            {$IFDEF Debug_GenerateDebugLog}
-              DebugLog('SetNamedSecurityInfoW2 dwResult: ' + IntToStr(dwResult));
-            {$ENDIF}
+          if dwResult <> ERROR_SUCCESS then Result := -6
+          else Result := 1;
 
-             {
-            if dwResult = ERROR_SUCCESS then ShowMessage('SetNamedSecurityInfo x2 success!');
+          {$IFDEF Debug_GenerateDebugLog}
+             if dwResult = ERROR_SUCCESS then
+                DebugLog('SetNamedSecurityInfo2 dwResult: ' + IntToStr(dwResult))
+             else
+                DebugLog('Error: SetNamedSecurityInfo2 failed with message: ' + SysErrorMessage(dwResult));
+          {$ENDIF}
 
-            if dwResult <> ERROR_SUCCESS then
-              ShowMessage('SetNamedSecurityInfo failed: ' + SysErrorMessage(GetLastError));   }
-
-            //LocalFree(Cardinal(pDACL));
-          end;
-         // else
-         //   ShowMessage('SetEntriesInAcl failed: ' + SysErrorMessage(dwResult));
-
-          FreeMem(pEA);
+          LocalFree(Cardinal(pDACL));
+        end else
+        begin
+          Result := -11;
+          {$IFDEF Debug_GenerateDebugLog}
+             DebugLog('Error: LookupAccountSidW-2 failed!');
+          {$ENDIF}
         end;
-      end;
-    except
-     on E : Exception do
-     begin
-      {$IFDEF Debug_GenerateDebugLog} DebugLog('Process-Init-1 Exception: ' + E.Message); {$ENDIF}
-      {$IFDEF Debug_ExceptionMessages} ShowMessage('Process-Init-1 Exception: ' + E.Message); {$ENDIF}
-     End;
-    end;
+   end else
+   begin
+     Result := -12;
+     {$IFDEF Debug_GenerateDebugLog}
+        DebugLog('Error: LookupAccountSidW-1 failed!');
+     {$ENDIF}
+   end;
+
+  except
+   {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_Pas_DO Exception: ' + E.Message); {$ENDIF}
   end;
-
-  //ShowMessage('Process_Init_Pas Done!');
-
 end;
+
+
 
 Procedure TMainForm.Process_Init();
 const
@@ -2687,8 +3112,13 @@ Begin
  for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
    PS_File.Add( StringReplace(PS_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
- PS_File.SaveToFile(Filename);
- if DEBUG_STORE_BAT = 1 then PS_File.SaveToFile( GetDesktopDir() + 'init.ps1' );
+ Try
+   PS_File.SaveToFile(Filename, TEncoding.ANSI);
+   if DEBUG_STORE_BAT = 1 then PS_File.SaveToFile( GetDesktopDir() + 'init.ps1' , TEncoding.UTF8);
+ except
+   {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init Save Exception: ' + E.Message); {$ENDIF}
+ end;
+
  PS_File.Free;
 
 
@@ -2699,9 +3129,9 @@ Begin
  begin
    Try
     if FileExists_Cached(Filename) then DeleteFile(Filename);
-   Except
-    ;
-   End;
+   except
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init DeleteFile Exception: ' + E.Message); {$ENDIF}
+   end;
  end;
 
 
@@ -2852,8 +3282,10 @@ begin
   Base64 := TBase64Encoding.Create();
   Content := Base64.Decode(PS_SCRIPT);
  Except
-  ;
- End;
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize_PS Decode Exception: ' + E.Message); {$ENDIF}
+ end;
+
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Finalize_PS Starting with content length: ' + IntToStr(Length(Content))); {$ENDIF}
 
 
  for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
@@ -2878,20 +3310,24 @@ begin
 
    Try
      Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_' + IntToStr(i) + '_' + IntToStr(GetTickCount) + '.ps1';
-     TmpList.SaveToFile(Filename);
+     TmpList.SaveToFile(Filename, TEncoding.ANSI);
 
-     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'finalize' + IntToStr(i) + '.ps1');
+     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'finalize' + IntToStr(i) + '.ps1', TEncoding.ANSI);
+   except
+     {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize_PS Save Exception: ' + E.Message); {$ENDIF}
+   end;
 
+   Try
      RunPSFileAndWait(Filename);
    Except
-     ;
-   End;
+      {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize_PS Run Exception: ' + E.Message); {$ENDIF}
+   end;
 
    Try
     if FileExists(Filename) then DeleteFile(Filename);
    Except
-     ;
-   End;
+      {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize_PS DeleteFile Exception: ' + E.Message); {$ENDIF}
+   end;
  end;
 
  TmpList.Free;
@@ -2916,51 +3352,69 @@ Var
 Begin
 
 
- {$IFDEF Debug_GenerateDebugLog}
-   DebugLog('Process_Finalize Start');
- {$ENDIF}
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize Start'); {$ENDIF}
 
  Filename_RunNow   := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_1' + IntToStr(GetTickCount) + '.bat';
- Filename_RunLater := GetCurrentUserDir() + 'UpdateFixer_Can_Be_Deleted_2' + IntToStr(GetTickCount) + '.bat';
+ Filename_RunLater := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_2' + IntToStr(GetTickCount) + '.bat';
+
+ // Just in case:
+ {$IFDEF Debug_GenerateDebugLog}
+ if (FBatFile = nil) or (FBlockerRemoval = nil) or (FBatFile.Count < 2) then DebugLog('Process_Finalize: Internal Error');
+ {$ENDIF}
+
 
  if (chkBlockers.Checked) and
     (FBlockerRemoval.Count > 0) then FBatFile.AddStrings(FBlockerRemoval);
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'0'; Application.ProcessMessages; {$ENDIF}
 
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize Filename_RunLater: ' + Filename_RunLater); {$ENDIF}
 
  FBatFile.Add('@echo .');
  FBatFile.Add('@echo ' + _t('All done!', 'updatefixer.bat-end') );
  FBatFile.Add('@timeout /t 2 /nobreak > NUL');
+
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize step 2'); {$ENDIF}
 
  FBatFile.Add('');
  FBatFile.Add(':: WARNING: This file has been customized to this specific system. Do not run this file on any other systems!');
  FBatFile.Add('');
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'1'; Application.ProcessMessages; {$ENDIF}
 
- FBatFile.SaveToFile(Filename_RunNow);
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize Saving Filename_RunNow: ' + Filename_RunNow); {$ENDIF}
 
+ Try
+  FBatFile.SaveToFile(Filename_RunNow, TEncoding.ANSI);
+ Except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize SaveFile-1 Exception: ' + E.Message); {$ENDIF}
+ end;
+
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize Saved Filename_RunNow: ' + Filename_RunNow); {$ENDIF}
 
  // Add the service starting code to only to script running AFTER:
  for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
    FBatFile.Add( StringReplace(CMD_Base, '<x>', ServiceNamesArr[i], [rfReplaceAll, rfIgnoreCase]) );
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'2'; Application.ProcessMessages; {$ENDIF}
+ {$IFDEF Debug_GenerateDebugLog}DebugLog('Process_Finalize Starting PS...'); {$ENDIF}
 
- if DebugHook = 0 then
- begin
+ Try
   Process_Finalize_PS();
   {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'3'; Application.ProcessMessages; {$ENDIF}
+ Except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize Run Process_Finalize_PS Exception: ' + E.Message); {$ENDIF}
+ end;
 
+ Try
   RunBatchFileAndWait(Filename_RunNow);
   {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'4'; Application.ProcessMessages; {$ENDIF}
-
-  if UI_AnyServiceCheckboxChecked() then Process_Finalize_PS();
- End;
+ Except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize Run RunBatchFileAndWait Exception: ' + E.Message); {$ENDIF}
+ end;
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'5'; Application.ProcessMessages; {$ENDIF}
 
 
- // Add some progress:
+ // Add some progress indication to the Batch file to be run later
  i := 10;
  x := FBatFile.Count div 10;
  if x < 1 then x := 1;
@@ -2973,40 +3427,52 @@ Begin
 
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'6'; Application.ProcessMessages; {$ENDIF}
 
- If FRegIniFilename <> '' then FBatFile.Add( '@del /Q /F /S "'+FRegIniFilename+'" > NUL 2>&1');
+ Try
+   If FRegIniFilename <> '' then FBatFile.Add( '@del /Q /F /S "'+FRegIniFilename+'" > NUL 2>&1');
 
- FBatFile.Add( CMD2 );
- FBatFile.Add( CMD3 );
- FBatFile.Add( '@del /Q /F /S "' +Filename_RunLater+ '" > NUL 2>&1');
- FBatFile.SaveToFile(Filename_RunLater);
+   FBatFile.Add( CMD2 );
+   FBatFile.Add( CMD3 );
 
- if DEBUG_STORE_BAT = 1 then FBatFile.SaveToFile(GetDesktopDir() + 'finalize.bat');
- {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'7'; Application.ProcessMessages; {$ENDIF}
+   FBatFile.Add( '@del /Q /F /S "' +GetTempDir()+ 'update_fixer_can_be_deleted*'+ '" > NUL 2>&1');     // Just in case
+   FBatFile.Add( '@del /Q /F /S "' +Filename_RunLater+ '" > NUL 2>&1');
+
+   FBatFile.SaveToFile(Filename_RunLater, TEncoding.ANSI);
+
+   if DEBUG_STORE_BAT = 1 then FBatFile.SaveToFile(GetDesktopDir() + 'finalize.bat', TEncoding.ANSI);
+   {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'7'; Application.ProcessMessages; {$ENDIF}
+ Except
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize SaveFile-2 Exception: ' + E.Message); {$ENDIF}
+ end;
 
 
- if DebugHook = 0 then
+ // Write the \RunOnce registry value to run the Batch file after reboot
+ if (DebugHook = 0) and (FileExists_Cached(Filename_RunLater)) then
  begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Finalize Write RunOnce Start'); {$ENDIF}
 
   R := TRegistry.Create(KEY_WRITE or KEY_WOW64_64KEY);
   R.RootKey := HKEY_LOCAL_MACHINE;
   if R.OpenKey(RegKey, False) then
   begin
    R.WriteString('UpdateFixer', Filename_RunLater);
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Finalize Write RunOnce Done'); {$ENDIF}
   end;
   R.Free;
 
+ end else
+ begin
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: Process_Finalize Write RunOnce SKIPPED'); {$ENDIF}
  end;
+
  {$IFDEF Debug_ShowProgress} lblHeader.Caption := lblHeader.Caption +'8'; Application.ProcessMessages; {$ENDIF}
 
  Try
   if FileExists(Filename_RunNow) then DeleteFile(Filename_RunNow);
  Except
-   ;
- End;
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Finalize DeleteFile Exception: ' + E.Message); {$ENDIF}
+ end;
 
- {$IFDEF Debug_GenerateDebugLog}
-   DebugLog('Process_Finalize Done');
- {$ENDIF}
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Finalize Done'); {$ENDIF}
 End;
 
 
@@ -3151,9 +3617,10 @@ begin
   Base64 := TBase64Encoding.Create();
   Content := Base64.Decode(PS_SCRIPT);
  Except
-  ;
- End;
+  {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_PS Decode Exception: ' + E.Message); {$ENDIF}
+ end;
 
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_Init_PS Starting with content length: ' + IntToStr(Length(Content))); {$ENDIF}
 
  for i := Low(ServiceNamesArr) to High(ServiceNamesArr) do
  begin
@@ -3165,6 +3632,10 @@ begin
     If IsByDefaultReadOnlyServKey(ServName) then Continue;
    end else Continue;
 
+   {$IFDEF Debug_GenerateDebugLog}
+     DebugLog('Process_Init_PS Do: ' + ServName);
+   {$ENDIF}
+
    TmpList.Clear;
    TmpList.Add( StringReplace(Content, '<x>', ServName, [rfReplaceAll, rfIgnoreCase]) );
 
@@ -3173,20 +3644,24 @@ begin
 
    Try
      Filename := GetTempDir() + 'UpdateFixer_Can_Be_Deleted_ix' + IntToStr(i) + '_' + IntToStr(GetTickCount) + '.ps1';
-     TmpList.SaveToFile(Filename);
+     TmpList.SaveToFile(Filename, TEncoding.ANSI);
 
-     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'init_' + IntToStr(i) + '.ps1');
+     if DEBUG_STORE_BAT = 1 then TmpList.SaveToFile(GetDesktopDir() + 'init_' + IntToStr(i) + '.ps1', TEncoding.ANSI);
+   Except
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_PS Save Exception: ' + E.Message); {$ENDIF}
+   end;
 
+   Try
      RunPSFileAndWait(Filename);
    Except
-     ;
-   End;
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_PS Run Exception: ' + E.Message); {$ENDIF}
+   end;
 
    Try
     if FileExists(Filename) then DeleteFile(Filename);
    Except
-     ;
-   End;
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_PS DeleteFile Exception: ' + E.Message); {$ENDIF}
+   end;
  end;
 
  TmpList.Free;
@@ -3225,16 +3700,25 @@ Begin
        RegIniFile.Add( BaseKey + ServiceNamesArr[i] +'\'+ ServiceKeySubDirs[j] + RegIniSuffix);
    end;
 
- RegIniFile.SaveToFile(Filename1);
- if DEBUG_STORE_BAT = 1 then RegIniFile.SaveToFile( GetDesktopDir() + 'reg_ini_txt0.txt' );
+ Try
+   RegIniFile.SaveToFile(Filename1, TEncoding.UTF8);
+   if DEBUG_STORE_BAT = 1 then RegIniFile.SaveToFile( GetDesktopDir() + 'reg_ini_txt0.txt', TEncoding.UTF8);
+ Except
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_Bat Save-1 Exception: ' + E.Message); {$ENDIF}
+ end;
 
  RegIniFile.Free;
 
  InitBat := TStringList.Create;
  InitBat.Add( '@regini.exe -b "' + Filename1 + '"  > NUL 2>&1');
- if DEBUG_STORE_BAT = 1 then InitBat.SaveToFile( GetDesktopDir() + 'reg_init.bat' );
+ if DEBUG_STORE_BAT = 1 then InitBat.SaveToFile( GetDesktopDir() + 'reg_init.bat' , TEncoding.UTF8);
 
- InitBat.SaveToFile(Filename2);
+ Try
+   InitBat.SaveToFile(Filename2, TEncoding.UTF8);
+ Except
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_Bat Save-2 Exception: ' + E.Message); {$ENDIF}
+ end;
+
  InitBat.Free;
 
  RunBatchFileAndWait(Filename2);
@@ -3246,8 +3730,8 @@ Begin
     if FileExists_Cached(Filename1) then DeleteFile(Filename1);
     if FileExists_Cached(Filename2) then DeleteFile(Filename2);
    Except
-    ;
-   End;
+      {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Init_Bat DeleteFile Exception: ' + E.Message); {$ENDIF}
+   end;
  end;
 
 End;
@@ -3288,8 +3772,12 @@ Begin
        RegIniFile.Add( BaseKey + ServiceNamesArr[i] +'\'+ ServiceKeySubDirs[j] + RegIniSuffix );
    end;
 
- RegIniFile.SaveToFile(Filename);
- if DEBUG_STORE_BAT = 1 then RegIniFile.SaveToFile( GetDesktopDir() + 'reg_ini_txt1.txt' );
+ Try
+  RegIniFile.SaveToFile(Filename, TEncoding.UTF8);
+  if DEBUG_STORE_BAT = 1 then RegIniFile.SaveToFile( GetDesktopDir() + 'reg_ini_txt1.txt', TEncoding.UTF8);
+ Except
+    {$IFDEF Debug_GenerateDebugLog} on E : Exception do DebugLog('Error: Process_Services Save Exception: ' + E.Message); {$ENDIF}
+ end;
 
  RegIniFile.Free;
 
@@ -3455,14 +3943,14 @@ begin
  TmpStr := ExpandEnvVariable(TmpStr);
  if TmpStr = '' then
  begin
-  {$IFDEF Debug_ExceptionMessages} ShowMessage('ExpandPath invalid data: ' + Path); {$ENDIF}
+  {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: ExpandPath invalid data: ' + Path); {$ENDIF}
   EXIT;
  end;
 
  Result := Copy(Result, 1, x1-1) + TmpStr + Copy(Result, x2+1, Length(Result));
 
  {$IFDEF Debug_GenerateDebugLog}
-  DebugLog('ExpandPath: ' + Path + ' => ' + Result);
+  // DebugLog('ExpandPath: ' + Path + ' => ' + Result);
  {$ENDIF}
 end;
 
@@ -3484,7 +3972,10 @@ begin
  If wrdReturn <> 0 then Result := Trim(chrResult);
 
  FEnvVars.Add(CacheKey, Result);
- {$IFDEF Debug_GenerateDebugLog} DebugLog('ExpandEnvVariable: ' + EnvVar + ' => ' + Result); {$ENDIF}
+
+ {$IFDEF Debug_GenerateDebugLog}
+ // DebugLog('ExpandEnvVariable: ' + EnvVar + ' => ' + Result);
+ {$ENDIF}
 
 end;
 
@@ -3707,14 +4198,13 @@ var
  LastProg  : UInt64;
  ExitCode  : DWORD;
 begin
- {$IFDEF Debug_GenerateDebugLog} DebugLog('RunBatchFileAndWait Start: ' + FileName);{$ENDIF}
-
  if DEBUG_NO_BATCH = 1 then EXIT;
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('RunBatchFileAndWait Start: ' + ExtractFilename(FileName));{$ENDIF}
 
  Try
   if FileExists(Filename) = False then
   begin
-   {$IFDEF Debug_ExceptionMessages} ShowMessage('RunBatchFileAndWait File not found: ' + Filename); {$ENDIF}
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: RunBatchFileAndWait File not found: ' + Filename); {$ENDIF}
    EXIT;
   end;
  Except
@@ -3844,14 +4334,13 @@ var
  LastProg  : UInt64;
  ExitCode  : DWORD;
 begin
- {$IFDEF Debug_GenerateDebugLog} DebugLog('RunPSFileAndWait Start: ' + FileName);{$ENDIF}
-
  if DEBUG_NO_BATCH = 1 then EXIT;
+ {$IFDEF Debug_GenerateDebugLog} DebugLog('RunPSFileAndWait Start: ' + ExtractFilename(FileName));{$ENDIF}
 
  Try
   if FileExists(Filename) = False then
   begin
-   {$IFDEF Debug_ExceptionMessages} ShowMessage('RunPSFileAndWait File not found: ' + Filename); {$ENDIF}
+   {$IFDEF Debug_GenerateDebugLog} DebugLog('Error: RunPSFileAndWait File not found: ' + Filename); {$ENDIF}
    EXIT;
   end;
  Except
@@ -4120,6 +4609,13 @@ begin
  end;
 
  FBlockersFound := (FBlockerRemoval.Count > 0);
+
+ {$IFDEF Debug_GenerateDebugLog}
+  DebugLog('FBlockersFound: ' + IntToStr(FBlockerRemoval.Count));
+  if FBlockersFound then
+     DebugLog('FBlockerRemoval: ' + FBlockerRemoval.Text);
+ {$ENDIF}
+
  Dirs.Free;
  UserDirs.Free;
  SubDirs.Free;
@@ -4235,7 +4731,6 @@ Begin
   if FileExists(Filename) = False then
   begin
    {$IFDEF Debug_GenerateDebugLog} DebugLog('Process_HostsFile_DO File not found: ' + Filename); {$ENDIF}
-   {$IFDEF Debug_ExceptionMessages} ShowMessage('Process_HostsFile_DO File not found: ' + Filename); {$ENDIF}
    EXIT;
   end;
  Except
@@ -4275,7 +4770,7 @@ Begin
  Try
    If bChanged then
    begin
-    List.SaveToFile(Filename);
+    List.SaveToFile(Filename, TEncoding.ANSI);
    end;
  Except
   ;
@@ -4287,7 +4782,7 @@ Begin
    If bChanged then
    begin
      if FileExists_Cached(Filename + '.bak') = False then
-        ListOrig.SaveToFile(Filename + '.bak');
+        ListOrig.SaveToFile(Filename + '.bak', TEncoding.ANSI);
    end;
  Except
   ;
@@ -4369,7 +4864,6 @@ Begin
   if FileExists(Filename) = False then
   begin
    {$IFDEF Debug_GenerateDebugLog} DebugLog('Analyze_HostsFile File not found: ' + Filename); {$ENDIF}
-   {$IFDEF Debug_ExceptionMessages} ShowMessage('Analyze_HostsFile File not found: ' + Filename); {$ENDIF}
    EXIT;
   end;
  Except
@@ -4567,6 +5061,16 @@ begin
     if R.ValueExists('Start') then x1 := R.ReadInteger('Start') else x1 := 0;
     if R.ValueExists('Type') then x2 := R.ReadInteger('Type') else x2 := 0;
     if (x1 >= 4) or ((x2 <> 16) and (x2 <> 32)) then Result := False else Result := True;
+
+    {$IFDEF Debug_GenerateDebugLog}
+     DebugLog('Analyze_System_Service_CanRead[' + ServName + '] x1: ' + IntToStr(x1) + ', x2: ' + IntToStr(x2));
+    {$ENDIF}
+
+   end else
+   begin
+    {$IFDEF Debug_GenerateDebugLog}
+     DebugLog('Analyze_System_Service_CanRead[' + ServName + ']: Cannot open key');
+    {$ENDIF}
    end;
 
 
@@ -4582,6 +5086,10 @@ begin
      if R.OpenKey(BaseKey + ServName +'\'+ ServiceKeySubDirs[i], False) then Inc(c);
     end;
 
+    {$IFDEF Debug_GenerateDebugLog}
+     DebugLog('Analyze_System_Service_CanRead[' + ServName + '] c: ' + IntToStr(c));
+    {$ENDIF}
+
     if c = 0 then Result := False;
    end;
 
@@ -4592,8 +5100,8 @@ begin
 
 
  {$IFDEF Debug_GenerateDebugLog}
-   if Result then DebugLog('Analyze_System_Service_CanRead: ' + ServName + ', Result: True')
-   else DebugLog('Analyze_System_Service_CanRead: ' + ServName + ', Result: False');
+   if Result then DebugLog('Analyze_System_Service_CanRead[' + ServName + '] Result: True')
+   else DebugLog('Analyze_System_Service_CanRead[' + ServName + '] Result: False');
  {$ENDIF}
 end;
 
@@ -4885,3 +5393,4 @@ end;
 
 
 end.
+
